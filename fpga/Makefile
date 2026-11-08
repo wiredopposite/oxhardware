@@ -1,0 +1,55 @@
+# OpenOX FPGA build
+#   make                         build DESIGN for BOARD (defaults: hello, upduino31)
+#   make DESIGN=lpc_probe prog   build and write to the board's config flash with iceprog
+#   make DESIGN=lpc_probe sim    run the design's iverilog testbench (sim/tb/tb_<design>.v)
+#   make clean
+#
+# Needs OSS CAD Suite's bin and lib folders on PATH (VS Code workspace terminals
+# already have them; elsewhere run oss-cad-suite\environment.ps1 first).
+
+BOARD  ?= upduino31
+DESIGN ?= hello
+TOP    := top_$(DESIGN)
+BUILD  := build/$(BOARD)/$(DESIGN)
+PCF    := boards/$(BOARD)/$(BOARD).pcf
+
+UART_RTL := rtl/uart/uart_tx.v rtl/uart/uart_rx.v
+
+RTL_hello     := $(UART_RTL)
+RTL_lpc_probe := $(UART_RTL) rtl/probe/lpc_sniff.v boards/$(BOARD)/$(BOARD)_clocks.v
+
+RTL := $(RTL_$(DESIGN)) boards/$(BOARD)/$(TOP).v
+
+# System clock target per design (MHz); optional extra clock constraints (nextpnr python)
+FREQ_hello     := 48
+FREQ_lpc_probe := 24
+FREQ           := $(or $(FREQ_$(DESIGN)),48)
+CLKPY          := $(wildcard boards/$(BOARD)/$(DESIGN)_clocks.py)
+PNR_EXTRA      := $(if $(CLKPY),--pre-pack $(CLKPY))
+
+all: $(BUILD)/$(TOP).bin
+
+$(BUILD)/$(TOP).json: $(RTL)
+	python -c "import os; os.makedirs('$(BUILD)', exist_ok=True)"
+	yosys -q -l $(BUILD)/yosys.log -p "synth_ice40 -top $(TOP) -json $@" $(RTL)
+
+$(BUILD)/$(TOP).asc: $(BUILD)/$(TOP).json $(PCF) $(CLKPY)
+	nextpnr-ice40 -q -l $(BUILD)/nextpnr.log --up5k --package sg48 --freq $(FREQ) $(PNR_EXTRA) --pcf $(PCF) --json $< --asc $@
+
+$(BUILD)/$(TOP).bin: $(BUILD)/$(TOP).asc
+	icepack $< $@
+
+prog: $(BUILD)/$(TOP).bin
+	iceprog $<
+
+SIM_TB := sim/tb/tb_$(DESIGN).v
+
+sim: $(SIM_TB) $(filter-out boards/$(BOARD)/$(BOARD)_clocks.v,$(RTL))
+	python -c "import os; os.makedirs('build/sim', exist_ok=True)"
+	iverilog -g2012 -o build/sim/tb_$(DESIGN).vvp $^
+	vvp -n build/sim/tb_$(DESIGN).vvp
+
+clean:
+	python -c "import shutil; shutil.rmtree('build', ignore_errors=True)"
+
+.PHONY: all prog sim clean

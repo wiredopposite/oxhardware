@@ -1,0 +1,390 @@
+// UPduino v3.1 design "lpc_probe": passive Xbox cold-boot timing logger.
+//
+// All LPC pins are inputs only. Connect through series resistors (00-system §4.4,
+// 04-hardware). The UPduino is powered from USB, independently of the Xbox.
+//
+// Time zero is the Xbox 3.3 V rail rising (v33_sense). For the next 2^22 us (~4.2 s)
+// it records, in microseconds: first LCLK activity, up to 4 LRESET# rising edges, and
+// the first LPC cycle, plus cycle counts by type and the first 16 cycle headers with
+// timestamps. The report is printed when the window ends or the rail drops. Press
+// Enter to print it again.
+//
+// Report format: 48 lines "II VVVVVVVV" (word index, value, hex). tools/lpc_probe_view.py
+// decodes it. Index map:
+//   00 magic 4C500001        01 power-on count       02 t first LCLK
+//   03-06 t LRESET# rise 1-4 07 LRESET# rise count    08 t first LPC cycle
+//   09 total cycles          0A mem rd  0B mem wr      0C io rd  0D io wr  0E other
+//   0F LCLK/16 edges in the last 1.024 ms
+//   10-2F records: even = {START[3:0], CT[3:0], t_us[23:0]}, odd = address
+// Timestamps that never happened read FFFFFFFF.
+//
+// LED: green blink = waiting for Xbox power, blue = capturing, green = report ready,
+//      red blink = no 12 MHz clock.
+`default_nettype none
+
+module top_lpc_probe (
+    input  wire       clk12,
+    output wire       led_red,
+    output wire       led_green,
+    output wire       led_blue,
+    output wire       flash_csn,
+    output wire       uart_tx,
+    input  wire       uart_rx,
+    // Xbox LPC (inputs only)
+    input  wire       lpc_clk,
+    input  wire       lpc_reset_n,
+    input  wire       lpc_frame_n,
+    input  wire [3:0] lpc_lad,
+    input  wire       v33_sense
+);
+    assign flash_csn = 1'b1;
+
+    wire clk, pll_locked, rst, clk_lf;
+    // System clock 24 MHz: plenty for 1 us timestamps and easy timing closure.
+    upduino31_clocks #(.DIVQ(3'b101)) u_clk (
+        .clk12(clk12), .clk_sys(clk), .pll_locked(pll_locked), .rst(rst), .clk_lf(clk_lf)
+    );
+    localparam integer UART_DIV = 208;   // 24 MHz / 115200 (0.16 % error)
+
+    // ------------------------------------------------------------ LCLK domain
+    wire [3:0]  rec_start, rec_ct;
+    wire [31:0] rec_addr;
+    wire        rec_toggle, lclk_div16;
+    lpc_sniff u_sniff (
+        .lclk(lpc_clk), .lreset_n(lpc_reset_n), .lframe_n(lpc_frame_n), .lad(lpc_lad),
+        .rec_start(rec_start), .rec_ct(rec_ct), .rec_addr(rec_addr),
+        .rec_toggle(rec_toggle), .lclk_div16(lclk_div16)
+    );
+
+    // ------------------------------------------------------------ synchronisers
+    reg [2:0] v33_sync, lrst_sync, div_sync, tog_sync;
+    always @(posedge clk) begin
+        v33_sync  <= {v33_sync[1:0],  v33_sense};
+        lrst_sync <= {lrst_sync[1:0], lpc_reset_n};
+        div_sync  <= {div_sync[1:0],  lclk_div16};
+        tog_sync  <= {tog_sync[1:0],  rec_toggle};
+    end
+    wire v33      = v33_sync[1];
+    wire lrst_hi  = lrst_sync[1];
+    wire lrst_r   = lrst_sync[1] & ~lrst_sync[2];
+    wire lclk_edg = div_sync[1] ^ div_sync[2];
+    wire rec_new  = tog_sync[1] ^ tog_sync[2];   // rec_* stable for >= 10 LCLKs
+
+    // ------------------------------------------------------------ microsecond timer
+    reg [5:0]  presc = 0;
+    reg        us_tick, ms_tick;  // ms_tick: every 1024 us, coincident with us_tick
+    reg [23:0] t_us;
+    always @(posedge clk) begin
+        us_tick <= (presc == 6'd22);
+        ms_tick <= (presc == 6'd22) && (t_us[9:0] == 10'h3FF);
+        presc   <= (presc == 6'd23) ? 6'd0 : presc + 1'b1;
+    end
+
+    // ------------------------------------------------------------ capture
+    localparam [1:0] C_OFF = 2'd0, C_CAP = 2'd1, C_DONE = 2'd2;
+    localparam [31:0] NEVER = 32'hFFFF_FFFF;
+
+    reg [1:0]  cstate;
+    reg [31:0] power_count;
+    reg [31:0] t_lclk, t_first;
+    reg [31:0] t_lrst0, t_lrst1, t_lrst2, t_lrst3;
+    reg [31:0] lrst_count;
+    reg [31:0] n_total, n_mrd, n_mwr, n_iord, n_iowr, n_other;
+    reg [15:0] lclk_cnt;
+    reg [31:0] lclk_per_ms;
+    reg        lclk_seen, first_seen, lrst_full;
+    reg        have_report, report_go;
+    reg        report_req;       // latched until the printer starts the report
+
+    // record memory (EBR): 32 x 32
+    reg [31:0] recmem [0:31];
+    reg        rm_we;
+    reg [4:0]  rm_waddr;
+    reg [31:0] rm_wdata;
+    reg [4:0]  rm_raddr;
+    reg [31:0] rm_rdata;
+    always @(posedge clk) begin
+        if (rm_we) recmem[rm_waddr] <= rm_wdata;
+        rm_rdata <= recmem[rm_raddr];
+    end
+
+    reg [4:0]  rec_idx;          // next record slot (0..16)
+    reg        rec_pend;         // second word of a record still to write
+    reg [31:0] rec_addr_hold;
+
+    wire [31:0] t_now = {8'd0, t_us};
+
+    // Decode each new LPC cycle into registered one-hot event flags (rec_* is stable
+    // for >= 10 LCLKs after the toggle, so one extra cycle of latency is harmless).
+    reg        ev_any, ev_mrd, ev_mwr, ev_iord, ev_iowr, ev_other;
+    reg [7:0]  ev_hdr;
+    reg [31:0] ev_addr;
+    wire       tgt = (rec_start == 4'b0000);
+    always @(posedge clk) begin
+        ev_any   <= rec_new && lrst_hi;
+        ev_mrd   <= rec_new && lrst_hi && tgt && rec_ct[3:1] == 3'b010;
+        ev_mwr   <= rec_new && lrst_hi && tgt && rec_ct[3:1] == 3'b011;
+        ev_iord  <= rec_new && lrst_hi && tgt && rec_ct[3:1] == 3'b000;
+        ev_iowr  <= rec_new && lrst_hi && tgt && rec_ct[3:1] == 3'b001;
+        ev_other <= rec_new && lrst_hi && !(tgt && rec_ct[3] == 1'b0);
+        ev_hdr   <= {rec_start, rec_ct};
+        ev_addr  <= rec_addr;
+    end
+
+    always @(posedge clk) begin
+        rm_we     <= 1'b0;
+        report_go <= 1'b0;
+        if (rst) begin
+            cstate      <= C_OFF;
+            power_count <= 0;
+            have_report <= 1'b0;
+        end else begin
+            case (cstate)
+            C_OFF: if (v33) begin
+                cstate      <= C_CAP;
+                power_count <= power_count + 1'b1;
+                t_us        <= 0;
+                t_lclk      <= NEVER;  t_first <= NEVER;
+                t_lrst0     <= NEVER;  t_lrst1 <= NEVER;
+                t_lrst2     <= NEVER;  t_lrst3 <= NEVER;
+                lrst_count  <= 0;
+                lrst_full   <= 1'b0;
+                n_total <= 0; n_mrd <= 0; n_mwr <= 0; n_iord <= 0; n_iowr <= 0; n_other <= 0;
+                lclk_cnt    <= 0;
+                lclk_per_ms <= 0;
+                lclk_seen   <= 1'b0;
+                first_seen  <= 1'b0;
+                rec_idx     <= 0;
+                rec_pend    <= 1'b0;
+            end
+
+            C_CAP: begin
+                if (us_tick) t_us <= t_us + 1'b1;
+
+                // LCLK activity and rate (per 1.024 ms)
+                if (ms_tick) begin
+                    lclk_per_ms <= {16'd0, lclk_cnt};
+                    lclk_cnt    <= lclk_edg ? 16'd1 : 16'd0;
+                end else if (lclk_edg) begin
+                    lclk_cnt <= lclk_cnt + 1'b1;
+                end
+                if (lclk_edg && !lclk_seen) begin
+                    lclk_seen <= 1'b1;
+                    t_lclk    <= t_now;
+                end
+
+                // LRESET# deassertions
+                if (lrst_r) begin
+                    if (!lrst_full) begin
+                        case (lrst_count[1:0])
+                            2'd0: t_lrst0 <= t_now;
+                            2'd1: t_lrst1 <= t_now;
+                            2'd2: t_lrst2 <= t_now;
+                            2'd3: t_lrst3 <= t_now;
+                        endcase
+                        if (lrst_count[1:0] == 2'd3) lrst_full <= 1'b1;
+                    end
+                    lrst_count <= lrst_count + 1'b1;
+                end
+
+                // LPC cycles (only meaningful while LRESET# is high)
+                if (ev_mrd)   n_mrd   <= n_mrd + 1'b1;
+                if (ev_mwr)   n_mwr   <= n_mwr + 1'b1;
+                if (ev_iord)  n_iord  <= n_iord + 1'b1;
+                if (ev_iowr)  n_iowr  <= n_iowr + 1'b1;
+                if (ev_other) n_other <= n_other + 1'b1;
+                if (ev_any) begin
+                    n_total <= n_total + 1'b1;
+                    if (!first_seen) begin
+                        first_seen <= 1'b1;
+                        t_first    <= t_now;
+                    end
+                    if (!rec_idx[4]) begin                 // first 16 records
+                        rm_we         <= 1'b1;
+                        rm_waddr      <= {rec_idx[3:0], 1'b0};
+                        rm_wdata      <= {ev_hdr, t_us};
+                        rec_addr_hold <= ev_addr;
+                        rec_pend      <= 1'b1;
+                    end
+                end else if (rec_pend) begin
+                    rm_we    <= 1'b1;
+                    rm_waddr <= {rec_idx[3:0], 1'b1};
+                    rm_wdata <= rec_addr_hold;
+                    rec_pend <= 1'b0;
+                    rec_idx  <= rec_idx + 1'b1;
+                end
+
+                // end of window or rail dropped -> report
+                if (t_us[22] || !v33) begin
+                    have_report <= 1'b1;
+                    report_go   <= 1'b1;
+                    cstate      <= v33 ? C_DONE : C_OFF;
+                end
+            end
+
+            default: if (!v33) cstate <= C_OFF;    // C_DONE
+            endcase
+        end
+    end
+
+    // ------------------------------------------------------------ UART + printer
+    wire [7:0] rx_data;
+    wire       rx_valid;
+    uart_rx #(.CLKS_PER_BIT(UART_DIV)) u_rx (
+        .clk(clk), .rst(rst), .rx(uart_rx), .data(rx_data), .valid(rx_valid)
+    );
+
+    reg  [7:0] tx_data;
+    reg        tx_valid;
+    wire       tx_ready;
+    uart_tx #(.CLKS_PER_BIT(UART_DIV)) u_tx (
+        .clk(clk), .rst(rst), .data(tx_data), .valid(tx_valid), .ready(tx_ready), .tx(uart_tx)
+    );
+
+    localparam integer BANNER_LEN = 43;
+    // "\015" = CR (portable; "\r" is not a Verilog-2005 escape)
+    localparam [8*BANNER_LEN-1:0] BANNER = "\015\nlpc_probe v1: waiting for Xbox power-on\015\n";
+
+    localparam [2:0] P_IDLE = 3'd0, P_BANNER = 3'd1, P_LOAD = 3'd2, P_WAIT = 3'd3,
+                     P_LATCH = 3'd4, P_LINE = 3'd5;
+    localparam [5:0] N_WORDS = 6'd48;
+
+    reg [2:0]  pstate;
+    reg [5:0]  bidx;            // banner index
+    reg [5:0]  widx;            // word index
+    reg [3:0]  pos;             // char position within line (0..12)
+    reg [31:0] wsh;             // word being printed, shifted left per hex digit
+    reg [31:0] reg_word;        // registered: widx is stable through P_LOAD/P_WAIT
+
+    always @(posedge clk) begin
+        case (widx[3:0])
+            4'h0: reg_word <= 32'h4C50_0001;
+            4'h1: reg_word <= power_count;
+            4'h2: reg_word <= t_lclk;
+            4'h3: reg_word <= t_lrst0;
+            4'h4: reg_word <= t_lrst1;
+            4'h5: reg_word <= t_lrst2;
+            4'h6: reg_word <= t_lrst3;
+            4'h7: reg_word <= lrst_count;
+            4'h8: reg_word <= t_first;
+            4'h9: reg_word <= n_total;
+            4'hA: reg_word <= n_mrd;
+            4'hB: reg_word <= n_mwr;
+            4'hC: reg_word <= n_iord;
+            4'hD: reg_word <= n_iowr;
+            4'hE: reg_word <= n_other;
+            default: reg_word <= lclk_per_ms;
+        endcase
+    end
+
+    function [7:0] hexc(input [3:0] n);
+        hexc = (n < 4'd10) ? (8'h30 + n) : (8'h37 + n);
+    endfunction
+
+    reg [7:0] line_char;
+    always @(*) begin
+        case (pos)
+            4'd0:    line_char = hexc({2'b00, widx[5:4]});
+            4'd1:    line_char = hexc(widx[3:0]);
+            4'd2:    line_char = 8'h20;
+            4'd11:   line_char = 8'h0D;
+            4'd12:   line_char = 8'h0A;
+            default: line_char = hexc(wsh[31:28]);
+        endcase
+    end
+
+    // Characters leave >= 4000 cycles apart, so the next character is looked up a cycle
+    // ahead into registers (keeps the banner ROM / line mux out of the tx_data path).
+    // 'hold' skips one cycle after entering a print state so these are up to date.
+    reg [7:0] banner_q, line_q;
+    reg       hold;
+    always @(posedge clk) begin
+        banner_q <= BANNER[8*(BANNER_LEN-1-bidx) +: 8];
+        line_q   <= line_char;
+    end
+
+    wire enter = rx_valid && (rx_data == 8'h0D);
+
+    always @(posedge clk) begin
+        tx_valid <= 1'b0;
+        if (report_go) report_req <= 1'b1;
+        if (rst) begin
+            report_req <= 1'b0;
+            pstate <= P_BANNER;
+            bidx   <= 0;
+            hold   <= 1'b1;
+        end else begin
+            case (pstate)
+            P_IDLE:
+                if (report_req || (enter && have_report)) begin
+                    report_req <= 1'b0;
+                    widx       <= 0;
+                    pstate     <= P_LOAD;
+                end else if (enter) begin
+                    bidx   <= 0;
+                    hold   <= 1'b1;
+                    pstate <= P_BANNER;
+                end
+            P_BANNER:
+                if (hold) hold <= 1'b0;
+                else if (tx_ready && !tx_valid) begin
+                    tx_data  <= banner_q;
+                    tx_valid <= 1'b1;
+                    if (bidx == BANNER_LEN - 1) pstate <= P_IDLE;
+                    bidx <= bidx + 1'b1;
+                end
+            P_LOAD: begin
+                rm_raddr <= widx[4:0] - 5'd16;   // 16..47 -> 0..31
+                pstate   <= P_WAIT;
+            end
+            P_WAIT:
+                pstate <= P_LATCH;
+            P_LATCH: begin
+                wsh    <= widx[5:4] == 2'b00 ? reg_word : rm_rdata;
+                pos    <= 0;
+                hold   <= 1'b1;
+                pstate <= P_LINE;
+            end
+            P_LINE:
+                if (hold) hold <= 1'b0;
+                else if (tx_ready && !tx_valid) begin
+                    tx_data  <= line_q;
+                    tx_valid <= 1'b1;
+                    if (pos >= 4'd3 && pos <= 4'd10) wsh <= {wsh[27:0], 4'h0};
+                    if (pos == 4'd12) begin
+                        if (widx == N_WORDS - 1) pstate <= P_IDLE;
+                        else begin
+                            widx   <= widx + 1'b1;
+                            pstate <= P_LOAD;
+                        end
+                    end
+                    pos <= pos + 1'b1;
+                end
+            default: pstate <= P_IDLE;
+            endcase
+        end
+    end
+
+    // ------------------------------------------------------------ LED
+    reg [23:0] blink = 0;
+    always @(posedge clk) blink <= blink + 1'b1;
+    reg [12:0] lf_cnt = 0;
+    always @(posedge clk_lf) lf_cnt <= lf_cnt + 1'b1;
+
+    wire on_red   = !pll_locked && lf_cnt[12];
+    wire on_green = pll_locked && ((cstate == C_OFF && blink[23]) || cstate == C_DONE);
+    wire on_blue  = pll_locked && cstate == C_CAP;
+
+    SB_RGBA_DRV #(
+        .CURRENT_MODE("0b1"),
+        .RGB0_CURRENT("0b000001"),
+        .RGB1_CURRENT("0b000001"),
+        .RGB2_CURRENT("0b000001")
+    ) u_rgb (
+        .CURREN(1'b1), .RGBLEDEN(1'b1),
+        .RGB0PWM(on_green), .RGB1PWM(on_blue), .RGB2PWM(on_red),
+        .RGB0(led_green), .RGB1(led_blue), .RGB2(led_red)
+    );
+endmodule
+
+`default_nettype wire

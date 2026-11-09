@@ -1,3 +1,7 @@
 refs/
 dumps/
 fpga/tools/provenance_check.py
+esp32/build/
+esp32/sdkconfig
+esp32/sdkconfig.old
+__pycache__/

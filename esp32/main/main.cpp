@@ -1,3 +1,4 @@
+#include "cfg_bus.hpp"
 #include "esp_log.h"
 #include "host_link.hpp"
 #include "sys_cmds.hpp"
@@ -8,5 +9,7 @@ extern "C" void app_main(void)
 {
     HostLink::Start();
     SysCmds::Register();
-    ESP_LOGI(Tag, "OpenOX ESP32 up");
+    CfgBus::Init();
+    CfgBus::RegisterCommands();
+    ESP_LOGI(Tag, "OpenOX ESP32 up, FPGA CDONE=%d", CfgBus::Cdone());
 }

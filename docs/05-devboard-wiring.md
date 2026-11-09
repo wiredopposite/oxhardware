@@ -27,7 +27,7 @@ SPI mode 0, ESP32 master. On the ESP32 the link uses the GPIO matrix (the module
 
 ## 3. Config bus and FPGA control
 
-Lets the ESP32 hold the FPGA in reset and program its flash directly (01-interface §2.2). The UPduino's FT232H is on the same nets; it releases them when `iceprog` is not running, so **never run `iceprog` and an ESP32 flash operation at the same time.** Put 100 Ω in series with each ESP32 output (`CFG_SCK`, `CFG_SS_N`, `CFG_MOSI`, `FPGA_CRESET_N`) to limit current if both ever drive.
+Lets the ESP32 hold the FPGA in reset and program its flash directly (01-interface §2.2). The UPduino's FT232H is on the same nets; it releases them when `iceprog` is not running, so **never run `iceprog` and an ESP32 flash operation at the same time.**
 
 | Signal | UPduino | ESP32 devkit | Notes |
 |---|---|---|---|

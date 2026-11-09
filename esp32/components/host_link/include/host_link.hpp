@@ -80,6 +80,15 @@ inline constexpr uint16_t SysVersion = 0x0001;
 inline constexpr uint16_t SysStatus = 0x0002;
 inline constexpr uint16_t SysReboot = 0x0003;
 inline constexpr uint16_t LogLevel = 0x0100;
+inline constexpr uint16_t FpgaInfo = 0x0200;
+inline constexpr uint16_t FpgaHold = 0x0201;
+inline constexpr uint16_t FpgaRelease = 0x0202;
+inline constexpr uint16_t FlashId = 0x0203;
+inline constexpr uint16_t FlashRead = 0x0204;
+inline constexpr uint16_t FlashErase = 0x0205;
+inline constexpr uint16_t FlashWrite = 0x0206;
+inline constexpr uint16_t FlashCrc = 0x0207;
+inline constexpr uint16_t FlashProbe = 0x0208;
 }
 
 // Takes over UART0 at the console baud rate, routes ESP-IDF logging into Log frames and

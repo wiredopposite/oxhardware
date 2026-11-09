@@ -48,7 +48,7 @@ A modchip for the original Xbox built from an **iCE40UP5K FPGA** and an **ESP32-
 | E-BOOT-1 | Programmable through a USB-UART bridge with DTR/RTS auto-reset (devkit style) | 0 |
 | E-FPGA-1 | Program/recover the FPGA NOR (bitstream, ROM banks, boot config) via the shared config bus while holding the FPGA in reset; slave-configure the FPGA as fallback | 0 |
 | E-ROM-1 | ROM library management in NOR: catalogue, add (PC / Xbox mailbox / flasher emulation), delete, verify, select default | 1→3 |
-| E-ROM-2 | Runtime ROM selection: boot config default, CLI, gamepad hotkey, Xbox mailbox, legacy bank writes, LCD | 1→3 |
+| E-ROM-2 | Runtime ROM selection: boot config default, PC tool, gamepad hotkey, Xbox mailbox, legacy bank writes, LCD | 1→3 |
 | E-ROM-3 | **Loader boot**: boot config default bank = a loader ROM running on the Xbox CPU (XBlast OS / XeniumOS via the Xenium personality, or our own). It reads the boot reason from the SMC over SMBus (eject vs. power button, tray state), can check held buttons or ask the ESP32 via the mailbox, then selects a bank and either jumps to it or arms `ARM_AT_RESET` and asks the SMC to reset. The chip itself can't see the boot reason (unpowered when the button is pressed; nothing on LPC says why). | 3 |
 | E-USB-1 | USB device stack: **pico_usb** core with a new FPGA DCD; XID and MSC functions from ox; hub emulation | 2 |
 | E-BT-1 | Bluetooth gamepads via BlueRetro, mapped to `GamepadIn`/`GamepadOut` | 2 |
@@ -83,9 +83,9 @@ SMBus device emulation (needs another wire — revisit with the standby option),
                          └──────────────────────────────┼────────────────────────────────────────┘ │
                                    link SPI + IRQ_N     │        CRESET_B, CDONE, config-bus SPI    │
                          ┌──────────────────── ESP32-PICO-MINI-02 ────────────────────────────────┐│
- USB-UART A ────────────►│ UART0 flash/log/CLI   VSPI: link only   HSPI: SD + LCD ⇄ config bus*  ├┘
+ USB-UART A ────────────►│ UART0 flash/PC proto VSPI: link only   HSPI: SD + LCD ⇄ config bus*  ├┘
  microSD, SPI LCD ◄─────►│ core 0: BlueRetro BT    core 1: fpga_svc, pico_usb, rom_mgr, legacy,   │
- BT gamepads ))))        │                                 msc_sd, led, cli, lcd                  │
+ BT gamepads ))))        │                                 msc_sd, led, host_link, lcd, smbus     │
  NeoPixel ×2 ◄───────────│ RMT                                                                    │
                          └────────────────────────────────────────────────────────────────────────┘
  * HSPI normally runs the SD/LCD pins; it is re-initialised onto the config-bus pins only for
@@ -159,7 +159,7 @@ Not yet measured: 1.0–1.5 boards; the FPGA's own power → `CDONE` → LPC-rea
 | Phase | Deliverable | Exit criteria |
 |---|---|---|
 | **0 – Bring-up & measure** | Repo skeletons, FPGA build for UPduino v3.1, ESP32 programs NOR + resets FPGA, FPGA self-boots, link with `ID`/scratch; cold-boot timing measurements (§4.4) | ESP32 writes a bitstream to NOR, FPGA boots it, link loopback 10⁶ transfers error-free; timing numbers recorded |
-| **1 – BIOS + COM** | NOR controller + prefetch, LPC target incl. **LFRAME# abort**, boot config, 16550 + UART + Super I/O, ESP32 ROM library in NOR + CLI, NeoPixels | 1.6 cold-boots 256 K / 512 K / 1 MB banks with no standby (then 1.0–1.5 via D0); switch at reset; kernel debug output on PC COM port |
+| **1 – BIOS + COM** | NOR controller + prefetch, LPC target incl. **LFRAME# abort**, boot config, 16550 + UART + Super I/O, ESP32 ROM library in NOR + PC protocol, SMBus master, NeoPixels | 1.6 cold-boots 256 K / 512 K / 1 MB banks with no standby (then 1.0–1.5 via D0); switch at reset; kernel debug output on PC COM port |
 | **2 – USB + BT** | Multi-address USB SIE, pico_usb FPGA DCD, XID, hub emulation, BlueRetro | BT controller plays through the test-pad port; composite vs. hub result recorded (Q2) |
 | **3 – Legacy + console-side management** | iotrap + bank map + JEDEC flash emulation, mailbox, first personality (Xenium: bank + LED + LCD), SPI LCD | An existing Xbox flasher writes a ROM into a bank; XeniumOS-style LCD/LED output appears on our LCD/NeoPixels |
 | **4 – SD mass storage** | `msc_sd` on the ESP32 (`sdspi` raw blocks) behind the MSC function over the FPGA USB | Xbox reads/writes the SD card (e.g. as an MU/USB drive) and can upload ROMs from it |

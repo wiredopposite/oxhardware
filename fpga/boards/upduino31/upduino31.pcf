@@ -10,7 +10,7 @@ set_io -nowarn led_blue  40
 set_io -nowarn led_red   41
 
 # Config flash (W25Q32) in user mode after configuration. flash_csn idles high when unused.
-set_io -nowarn flash_csn  16
+set_io -nowarn -pullup yes flash_csn 16
 set_io -nowarn flash_sck  15
 set_io -nowarn flash_mosi 14   # FPGA SPI_SO -> flash DI (IO0)
 set_io -nowarn flash_miso 17   # flash DO (IO1) -> FPGA SPI_SI

@@ -26,12 +26,13 @@ Firmware-facing hardware assumptions, not a schematic. Final pin maps go in `fpg
 |---|---|---|---|---|
 | Programming/console | U0TXD, U0RXD, EN, GPIO0 | 4 | 1, 3, EN, 0 | Standard DTR/RTS auto-reset |
 | Link | SCK, MOSI, MISO, LINK_CS | 4 | 18, 23, 19, 5 (VSPI IO_MUX) | Dedicated to the FPGA. GPIO5 is a strap: the FPGA's unconfigured pull-up holds it high, which is its default |
-| SD + LCD bus | SCK, MOSI, MISO, SD_CS, SD_CD, LCD_CS, LCD_DC, LCD_BL | 8 | HSPI via GPIO matrix (≤ 26 MHz is fine for both) | **Not** GPIO12/15/2. SD MISO pull-up 10 kΩ |
+| SD + LCD bus | SCK, MOSI, MISO, SD_CS, LCD_CS, LCD_DC, LCD_BL | 7 | HSPI via GPIO matrix (≤ 26 MHz is fine for both) | **Not** GPIO12/15/2. SD MISO pull-up 10 kΩ |
 | FPGA control | CRESET_N, CDONE, IRQ_N | 3 | CDONE/IRQ_N on input-only 34–39 | |
 | Config bus | SCK, MOSI, MISO, SS | 4 | HSPI re-pinned via GPIO matrix (recovery only), **not** GPIO12/15/2 | Separate wires from the SD/LCD bus. An unconfigured iCE40 pulls its pins high; GPIO12 high at reset = 1.8 V flash = no boot. Burn the VDD_SDIO eFuse to 3.3 V on production boards regardless. 33 Ω series. |
 | NeoPixel | DATA0, DATA1 | 2 | any | 74AHCT1G125 to 5 V |
+| SMBus | SDA, SCL | 2 | any (open-drain) | Xbox SMBus from LPC header pins 13/14; console's pull-ups, none on our side |
 | Standby extras (opt.) | POWER_BTN, EJECT_BTN, STANDBY_DETECT | 3 | | Only meaningful with standby |
-| **Total** | | **25 (+3)** | of ~27 usable | Tight. If short (e.g. with standby extras): read CDONE via the link `ID` instead, poll SD presence instead of SD_CD, tie LCD_BL on |
+| **Total** | | **26 (+3)** | of ~27 usable | Tight. If short (e.g. with standby extras): read CDONE via the link `ID` instead, tie LCD_BL on |
 
 ## 3. Power (no standby required)
 
@@ -55,6 +56,7 @@ Firmware-facing hardware assumptions, not a schematic. Final pin maps go in `fpg
 | LPC header | LAD0–3, LCLK, LRESET#, LFRAME#, 3.3 V (sense/ref), GND | 33 Ω series on LAD0–3/LCLK, 100 Ω on LRESET#; keep the LCLK stub short and the ground return solid (§4.3). Pinout in §4.1 |
 | D0 (1.0–1.5) | 1 | To `D0_N` (open-drain) — releasable for TSOP fallback — or grounded |
 | 1.6 | LFRAME# via N-MOSFET (§4.2) | Requires the LPC header rebuild |
+| SMBus | SDA, SCL (LPC header 14, 13) | To the ESP32 |
 | Controller-port test pads | D+, D−, VBUS, GND | 27 Ω series, 1.5 kΩ pull-up via `USB_PU`, ESD array. Only one port → multiple devices via composite or hub emulation |
 | Standby (optional) | 5 V SB (+ power/eject button wires) | Enables wake-from-controller, ROM switch + power-cycle |
 

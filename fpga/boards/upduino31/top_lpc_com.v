@@ -48,8 +48,6 @@ module top_lpc_com (
     wire [23:0] req_addr;
     wire [7:0]  ack_data;
     wire        st_served, tgt_in_reset;
-    wire        t_ack;
-    wire [7:0]  t_ack_data;
     wire [15:0] io_addr, io_addr_nxt;
     wire        io_write, io_addr_last, io_hit, io_rd, io_wr;
     wire [7:0]  io_rdata, io_wdata;
@@ -63,7 +61,7 @@ module top_lpc_com (
         .lad_out(lad_out), .lad_oe(lad_oe), .lframe_oe(lframe_oe),
         .serve_en(1'b1), .lframe_abort(1'b1), .io_en(1'b1),
         .rom_base(ROM_BASE), .rom_mask(ROM_MASK),
-        .req(req), .req_addr(req_addr), .ack(t_ack), .ack_data(t_ack_data),
+        .req(req), .req_addr(req_addr), .ack(ack), .ack_data(ack_data),
         .io_addr(io_addr), .io_write(io_write), .io_addr_nxt(io_addr_nxt),
         .io_addr_last(io_addr_last), .io_hit(io_hit), .io_rd(io_rd),
         .io_rdata(io_rdata), .io_wr(io_wr), .io_wdata(io_wdata),
@@ -73,28 +71,18 @@ module top_lpc_com (
         .stat_addr(), .stat_data(), .lframe_holding(holding), .dbg_state()
     );
 
-    // Head cache: the first 4 KB of the image, preloaded into EBR at build time from
-    // build/rom_head.hex and answered with no flash access.
-    reg  [7:0]  head [0:4095];
-    initial $readmemh("build/rom_head.hex", head);
-    reg         in_head = 1'b0;
-    reg  [7:0]  head_q;
-    reg         head_ack = 1'b0, req_d = 1'b0;
-    always @(posedge lpc_clk) begin
-        in_head  <= (req_addr[17:12] == 6'd0);
-        head_q   <= head[req_addr[11:0]];
-        req_d    <= req;
-        head_ack <= req && req_d && in_head && !head_ack;
-    end
-    assign t_ack      = head_ack | ack;
-    assign t_ack_data = head_ack ? head_q : ack_data;
-
+    wire f_cs_n, f_sck, f_mosi;
     spi_stream u_flash (
         .clk(lpc_clk), .rst(tgt_in_reset),           // re-wake the flash on every boot
-        .req(req && !in_head), .req_addr(req_addr), .ack(ack), .ack_data(ack_data),
+        .req(req), .req_addr(req_addr), .ack(ack), .ack_data(ack_data),
         .restarted(restarted),
-        .spi_cs_n(flash_csn), .spi_sck(flash_sck), .spi_mosi(flash_mosi), .spi_miso(flash_miso)
+        .spi_cs_n(f_cs_n), .spi_sck(f_sck), .spi_mosi(f_mosi), .spi_miso(flash_miso)
     );
+    // The flash pins are only driven while the console is out of reset, so a programmer
+    // on the same pins (iceprog) never fights a running design. CS# has a pull-up.
+    assign flash_csn  = tgt_in_reset ? 1'bz : f_cs_n;
+    assign flash_sck  = tgt_in_reset ? 1'bz : f_sck;
+    assign flash_mosi = tgt_in_reset ? 1'bz : f_mosi;
 
     // ------------------------------------------------------------ LCLK domain: I/O devices
     // Port decode, registered on the last address nibble so the claim decision on the

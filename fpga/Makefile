@@ -36,9 +36,9 @@ PNR_EXTRA      := $(if $(CLKPY),--pre-pack $(CLKPY))
 
 all: $(BUILD)/$(TOP).bin
 
-# head cache (lpc_serve, lpc_com): first 4 KB of the ROM image as $(readmemh) data
+# lpc_serve head cache: first 4 KB of the ROM image as $(readmemh) data
 HEAD_HEX := build/rom_head.hex
-ifneq ($(filter lpc_serve lpc_com,$(DESIGN)),)
+ifeq ($(DESIGN),lpc_serve)
 $(BUILD)/$(TOP).json: $(HEAD_HEX)
 endif
 $(HEAD_HEX):

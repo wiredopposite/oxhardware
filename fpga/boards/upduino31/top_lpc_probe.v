@@ -3,11 +3,11 @@
 // All LPC pins are inputs only. Connect through series resistors (00-system §4.4,
 // 04-hardware). The UPduino is powered from USB, independently of the Xbox.
 //
-// Time zero is the Xbox 3.3 V rail rising (v33_sense). For the next 2^22 us (~4.2 s)
+// Time zero is the Xbox 3.3 V rail rising (v33_sense; must then stay up >= 1 ms to count). For the next 2^22 us (~4.2 s)
 // it records, in microseconds: first LCLK activity, up to 4 LRESET# rising edges, and
 // the first LPC cycle, plus cycle counts by type and the first 16 cycle headers with
 // timestamps. The report is printed when the window ends or the rail drops. Press
-// Enter to print it again.
+// Enter to print it again; press 's' for a live input-status line (index 3F).
 //
 // Report format: 48 lines "II VVVVVVVV" (word index, value, hex). tools/lpc_probe_view.py
 // decodes it. Index map:
@@ -64,11 +64,60 @@ module top_lpc_probe (
         div_sync  <= {div_sync[1:0],  lclk_div16};
         tog_sync  <= {tog_sync[1:0],  rec_toggle};
     end
-    wire v33      = v33_sync[1];
+    // 3.3 V sense: capture starts on the first raw high (time zero), but is cancelled
+    // silently unless the rail stays high for ~1 ms (see 'confirmed'). Power-off needs the
+    // filtered level (stable 1 ms) to go low. A floating/noisy input can't fake power-ons.
+    localparam integer V33_STABLE_CLKS = 24000;
+    wire       v33_raw = v33_sync[1];
+    reg [14:0] v33_cnt = 0;
+    reg        v33     = 1'b0;          // filtered
+    always @(posedge clk) begin
+        if (v33_sync[1] == v33)
+            v33_cnt <= 0;
+        else if (v33_cnt == V33_STABLE_CLKS - 1) begin
+            v33     <= v33_sync[1];
+            v33_cnt <= 0;
+        end else
+            v33_cnt <= v33_cnt + 1'b1;
+    end
     wire lrst_hi  = lrst_sync[1];
     wire lrst_r   = lrst_sync[1] & ~lrst_sync[2];
     wire lclk_edg = div_sync[1] ^ div_sync[2];
     wire rec_new  = tog_sync[1] ^ tog_sync[2];   // rec_* stable for >= 10 LCLKs
+
+    // ------------------------------------------------------------ live input status ('s')
+    // Free-running 1 ms tick; LCLK "running" = an LCLK/16 edge seen in the last 1 ms;
+    // v33 toggles counted per ~1 s (saturating) to spot a floating sense input.
+    reg [1:0]  frame_sync;
+    reg [7:0]  lad_sync;
+    always @(posedge clk) begin
+        frame_sync <= {frame_sync[0], lpc_frame_n};
+        lad_sync   <= {lad_sync[3:0], lpc_lad};
+    end
+    reg [14:0] fr_ms   = 0;
+    reg        fr_tick = 0;
+    reg [9:0]  fr_sec  = 0;
+    reg        lclk_recent, lclk_live;
+    reg        v33_prev;
+    reg [7:0]  v33_tog, v33_tog_last;
+    always @(posedge clk) begin
+        fr_tick  <= (fr_ms == 15'd23998);
+        fr_ms    <= (fr_ms == 15'd23999) ? 15'd0 : fr_ms + 1'b1;
+        v33_prev <= v33_sync[1];
+        if (fr_tick) begin
+            lclk_live   <= lclk_recent;
+            lclk_recent <= 1'b0;
+        end else if (lclk_edg)
+            lclk_recent <= 1'b1;
+        if (fr_tick && fr_sec == 10'd999) begin
+            fr_sec       <= 0;
+            v33_tog_last <= v33_tog;
+            v33_tog      <= 0;
+        end else begin
+            if (fr_tick) fr_sec <= fr_sec + 1'b1;
+            if ((v33_sync[1] ^ v33_prev) && v33_tog != 8'hFF) v33_tog <= v33_tog + 1'b1;
+        end
+    end
 
     // ------------------------------------------------------------ microsecond timer
     reg [5:0]  presc = 0;
@@ -92,7 +141,7 @@ module top_lpc_probe (
     reg [31:0] n_total, n_mrd, n_mwr, n_iord, n_iowr, n_other;
     reg [15:0] lclk_cnt;
     reg [31:0] lclk_per_ms;
-    reg        lclk_seen, first_seen, lrst_full;
+    reg        lclk_seen, first_seen, lrst_full, confirmed;
     reg        have_report, report_go;
     reg        report_req;       // latched until the printer starts the report
 
@@ -140,9 +189,9 @@ module top_lpc_probe (
             have_report <= 1'b0;
         end else begin
             case (cstate)
-            C_OFF: if (v33) begin
+            C_OFF: if (v33_raw) begin
                 cstate      <= C_CAP;
-                power_count <= power_count + 1'b1;
+                confirmed   <= 1'b0;
                 t_us        <= 0;
                 t_lclk      <= NEVER;  t_first <= NEVER;
                 t_lrst0     <= NEVER;  t_lrst1 <= NEVER;
@@ -214,8 +263,18 @@ module top_lpc_probe (
                     rec_idx  <= rec_idx + 1'b1;
                 end
 
+                // rail must stay up for 1.024 ms to count as a power-on
+                if (!confirmed) begin
+                    if (!v33_raw)
+                        cstate <= C_OFF;                // glitch: drop silently
+                    else if (t_us[10]) begin
+                        confirmed   <= 1'b1;
+                        power_count <= power_count + 1'b1;
+                    end
+                end
+
                 // end of window or rail dropped -> report
-                if (t_us[22] || !v33) begin
+                if (confirmed && (t_us[22] || !v33)) begin
                     have_report <= 1'b1;
                     report_go   <= 1'b1;
                     cstate      <= v33 ? C_DONE : C_OFF;
@@ -303,21 +362,37 @@ module top_lpc_probe (
         line_q   <= line_char;
     end
 
-    wire enter = rx_valid && (rx_data == 8'h0D);
+    wire enter  = rx_valid && (rx_data == 8'h0D);
+    wire status = rx_valid && (rx_data == 8'h73 || rx_data == 8'h53);   // 's' / 'S'
+    reg  single;                 // printing a single status line
+
+    // Status word (index 3F): [31:24] 5A, [23:16] 3.3V-sense toggles in last ~1 s,
+    // [15:12] LAD, [11] LFRAME#, [10] LRESET#, [9] 3.3V sense raw, [8] 3.3V filtered,
+    // [7] LCLK running, [6:5] capture state, [4] report stored, [3] confirmed
+    reg [31:0] status_word;
+    always @(posedge clk)
+        status_word <= {8'h5A, v33_tog_last, lad_sync[7:4], frame_sync[1], lrst_sync[1],
+                        v33_sync[1], v33, lclk_live, cstate, have_report, confirmed, 3'b000};
 
     always @(posedge clk) begin
         tx_valid <= 1'b0;
         if (report_go) report_req <= 1'b1;
         if (rst) begin
             report_req <= 1'b0;
+            single     <= 1'b0;
             pstate <= P_BANNER;
             bidx   <= 0;
             hold   <= 1'b1;
         end else begin
             case (pstate)
             P_IDLE:
-                if (report_req || (enter && have_report)) begin
+                if (status) begin
+                    single <= 1'b1;
+                    widx   <= 6'h3F;
+                    pstate <= P_LOAD;
+                end else if (report_req || (enter && have_report)) begin
                     report_req <= 1'b0;
+                    single     <= 1'b0;
                     widx       <= 0;
                     pstate     <= P_LOAD;
                 end else if (enter) begin
@@ -340,7 +415,7 @@ module top_lpc_probe (
             P_WAIT:
                 pstate <= P_LATCH;
             P_LATCH: begin
-                wsh    <= widx[5:4] == 2'b00 ? reg_word : rm_rdata;
+                wsh    <= single ? status_word : (widx[5:4] == 2'b00 ? reg_word : rm_rdata);
                 pos    <= 0;
                 hold   <= 1'b1;
                 pstate <= P_LINE;
@@ -352,7 +427,7 @@ module top_lpc_probe (
                     tx_valid <= 1'b1;
                     if (pos >= 4'd3 && pos <= 4'd10) wsh <= {wsh[27:0], 4'h0};
                     if (pos == 4'd12) begin
-                        if (widx == N_WORDS - 1) pstate <= P_IDLE;
+                        if (single || widx == N_WORDS - 1) pstate <= P_IDLE;
                         else begin
                             widx   <= widx + 1'b1;
                             pstate <= P_LOAD;

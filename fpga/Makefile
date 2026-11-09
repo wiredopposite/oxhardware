@@ -17,12 +17,14 @@ UART_RTL := rtl/uart/uart_tx.v rtl/uart/uart_rx.v
 
 RTL_hello     := $(UART_RTL)
 RTL_lpc_probe := $(UART_RTL) rtl/probe/lpc_sniff.v boards/$(BOARD)/$(BOARD)_clocks.v
+RTL_lpc_iolog := $(UART_RTL) rtl/probe/lpc_sniff.v rtl/common/spram64.v boards/$(BOARD)/$(BOARD)_clocks.v
 
 RTL := $(RTL_$(DESIGN)) boards/$(BOARD)/$(TOP).v
 
 # System clock target per design (MHz); optional extra clock constraints (nextpnr python)
 FREQ_hello     := 48
 FREQ_lpc_probe := 24
+FREQ_lpc_iolog := 24
 FREQ           := $(or $(FREQ_$(DESIGN)),48)
 CLKPY          := $(wildcard boards/$(BOARD)/$(DESIGN)_clocks.py)
 PNR_EXTRA      := $(if $(CLKPY),--pre-pack $(CLKPY))

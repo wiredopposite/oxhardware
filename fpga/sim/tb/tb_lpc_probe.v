@@ -43,7 +43,9 @@ module tb;
     end
 
     initial begin
-        #2_000_000;                         // let PLL stub/reset settle, banner print
+        #1_000_000;                         // let PLL stub/reset settle
+        repeat (50) begin #7_000 v33 = 1; #3_000 v33 = 0; end   // noise: must be ignored
+        #500_000;
         v33 = 1;                            // t = 0
         #100_000  lclk_en = 1;              // LCLK at ~100 us
         #200_000  lrst_n = 1;               // LRESET# rises at ~300 us
@@ -56,7 +58,7 @@ module tb;
         #20_000 lrst_n = 0;
         #10_000 lrst_n = 1;                     // second reset pulse
         lpc_cycle(4'b0100, 32'hFFFF_FFF0, 8);
-        #100_000 v33 = 0;                       // power off -> report
+        #2_000_000 v33 = 0;                     // power off -> report (after 1 ms filter)
         #60_000_000;
         $finish;
     end

@@ -129,12 +129,27 @@ Rationale: legacy LCD/LED interfaces are write-mostly (HD44780 over parallel-ish
 
 ### 6.2 Personalities (ESP32-side, examples)
 
-| Chip | Typical I/O (to confirm from OpenXenium / XBMC4Xbox LCD drivers) [VERIFY all] | iotrap use |
+| Chip | I/O ports | iotrap use |
 |---|---|---|
-| Xenium / OpenXenium | `0xEF` bank select (+ status read), `0xEE` LED/LCD control bits | `0xEE` capture + shadow; `0xEF` bank-select fast path + shadow |
-| SmartXX | LCD data/command ports in the `0xF7xx` range, LED port | capture + shadow |
-| Xecuter 3 | LCD ports in the `0xF5xx`/`0xF7xx` range | capture + shadow |
-| Aladdin / others | LCD ports | capture + shadow |
+| Xenium / OpenXenium | **Observed** (see below): `0xEE` LED, `0xEF` bank select + bit-banged serial (LCD) + status read | `0xEE` capture + shadow; `0xEF` bank-select fast path + capture (serial bits) + shadow read |
+| SmartXX | LCD data/command ports in the `0xF7xx` range, LED port [VERIFY] | capture + shadow |
+| Xecuter 3 | LCD ports in the `0xF5xx`/`0xF7xx` range [VERIFY] | capture + shadow |
+| Aladdin / others | LCD ports [VERIFY] | capture + shadow |
+
+**OpenXenium + XeniumOS, observed with `lpc_iolog` (1.6, LPC splitter, 2026-11-08).** One session: power on → XeniumOS menu (~2 min) → boot a BIOS from bank 3. Raw capture: `fpga/build/xenium_raw.txt` (not in git).
+
+| Port | Observed | Meaning (inferred) |
+|---|---|---|
+| `0xEE` W | 21 writes, values `00`–`07` only. At boot it steps `00,01,…,07` within ~26 ms (LED self-test), then e.g. `02`,`03`,`07`,`01`; `00` written just before the final reset | 3-bit LED colour [bit → R/G/B mapping to confirm by eye] |
+| `0xEF` W `[3:0]` | Values `1`, `2`, `3`, `A`. `2` at 620 ms, then `A`/`1` alternate repeatedly while the menu runs; `3` = the bank booted | Bank select. XeniumOS switches banks itself at runtime (presumably to read its BIOS list/settings from another bank), so the fast path must apply immediately, not only at reset |
+| `0xEF` W `[6:4]` | Idle `111` (`0x70`). Bursts of 131 / 520 / 286 writes in which bit 6 toggles every write pair and bit 4 carries data (patterns `4x`/`5x` vs `0x`/`1x`); no reads of `0xEF` during bursts | Write-only bit-banged serial: bit 6 = clock, bit 4 = data, bit 5 = select (low during bursts). Consistent with an SPI LCD. Each bit costs ~3 LPC I/O writes (~46 µs/bit as observed) |
+| `0xEF` W `[7]` | Set exactly once: `73` → `F3`, then `LRESET#` asserted 1.06 ms later | Arms / triggers boot of the selected bank (seems to cause or precede the reset) [confirm] |
+| `0xEF` R | Read once at 2.05 s → `BA` | Chip detect / status byte; serve `BA` from shadow RAM |
+| `0x3F8–0x3FD` | XeniumOS (RTTarget-32) programs COM1 (divisor 1 = 115200 8N1, MCR 03) and prints its banner `RTTarget-32 4.0 32-Bit Boot Code …`; LSR (`0x3FD`) reads get no response (`FF`) | Our 16550 will receive this; confirms F-COM is used by real software on boot |
+| `0x2E/0x2F` | After the booted BIOS (a **devkit BIOS** with serial debug output and a WinDbg/KD stub) starts: write `55`, `26`, read `2F` → no response, and no COM traffic follows | Kernel Super I/O probe: SMSC enter-config key `55`, then config index `0x26`. With nothing answering, the kernel concludes there is no Super I/O and skips serial debug/KD. **F-COM-4 must answer this sequence**: per `refs/xprobe` `superio.cpp`, registers `0x26`/`0x27` hold the chip's own config port, so `0x26` must read back `0x2E` (`0x27` → `0x00`); the kernel then selects LDN 4/5 (`0x07`), writes base `0x60/0x61` and activate `0x30`. Answer `0x2F` only while in config mode (after `55`, until `AA`) — a phase-1 test case: same BIOS, expect its output on our UART |
+| `LRESET#` | After `F3`: asserted 1.06 ms, released 1.1 ms later, asserted again 21 ms later, released 21 ms after that | Two reset pulses on a bank-switch reboot; the bank written before the reset must persist through both |
+
+Memory reads aren't logged by `lpc_iolog`, so which device served the boot (and from which bank) isn't directly visible.
 
 ### 6.3 JEDEC flash emulation (`flash_emu`)
 

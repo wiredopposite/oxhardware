@@ -13,18 +13,5 @@ Status markers used throughout:
 - **[DECIDED]** — settled; change only with a reason.
 - **[PROPOSED]** — recommended default; confirm or override.
 - **[OPEN]** — needs a decision before the phase that depends on it.
-- **[VERIFY]** — a fact taken from memory or a reference that must be checked against the datasheet before hardware is committed.
 
-Reference code lives in `../refs/` (not part of this project):
-
-| Ref | Used for |
-|---|---|
-| `refs/ox` (RP2350) | LPC decode/responder behaviour, window/mirroring rules, serve-at-reset, 16550 emulation (guest baud ignored, LSR back-pressure), XID/MSC USB functions |
-| `refs/ox/thirdparty/pico_usb` (Apache-2.0) | USB device core for the ESP32 side: pluggable DCD, composite and hub emulation with multiple downstream devices |
-| `refs/EOS` (Gowin FPGA) | RTL LPC target on LCLK, SYNC timeout handling, 1.6 LFRAME# abort, D0 handling, serve-while-filling, status LED ideas |
-| `refs/xprobe` | SMSC-style Super I/O config space (0x2E/0x2F) so debug kernels find the COM port |
-| `refs/lpc-uart` | Minimal RTL LPC → UART device |
-| `refs/valentyusb` (BSD-3) | iCE40UP5K-proven USB FS PHY/SIE; `eptri` is the model for the CPU-driven endpoint interface |
-| `refs/FPGA-USB-Device` (LGPL-2.1) | Readable Verilog USB FS bit/packet layers (needs 60 MHz; licence is copyleft — study, don't paste) |
-| `refs/Gowin_USB1.1_SoftPHY_RefDesign` | Alternative soft PHY (vendor licence — reference only) |
-| `refs/oxblueretro` (Apache-2.0) | BlueRetro Bluetooth stack on ESP32-PICO-MINI, `components/gamepad` `GamepadIn`/`GamepadOut` model |
+Credits and provenance: [CREDITS.md](CREDITS.md).

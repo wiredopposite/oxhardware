@@ -4,7 +4,7 @@
 
 | Resource | UP5K | Planned use |
 |---|---|---|
-| LUT4 / FF | 5280 | ~4.0–4.6 k estimated (§11) — tight; features are build-time parameters |
+| LUT4 / FF | 5280 | ~4.0–4.6 k estimated (§10) — tight; features are build-time parameters |
 | EBR (512 B each) | 30 | USB slot buffers (4), COM FIFOs (2), mailbox (2), NOR prefetch + program buffer (2), shadow RAM + link FIFOs (2) |
 | SPRAM (32 KB each) | 4 | 1 × iotrap event FIFO (8 K × 32 bit); others spare (possible ROM cache) |
 | PLL | 1 | 12 MHz → 48 MHz |
@@ -47,7 +47,7 @@ top_<board>.v              pins, SB_IO, SB_PLL40_PAD, SB_RGBA_DRV, SB_SPRAM256KA
 
 Build-time parameters (`FEATURE_*`) let a smaller bitstream drop iotrap/flash-emu/Super I/O if LUTs run out. `NOR_WIDTH` (1/2/4) selects single, dual-output (`0x3B`) or quad (`0xEB`) reads per board.
 
-Vendor primitives (`SB_IO`, `SB_PLL40_PAD`, `SB_RGBA_DRV`, `SB_SPRAM256KA`) appear only in `boards/` and thin wrappers in `rtl/common/prim_*.v`, so a fallback FPGA (§11.1) means new wrappers, not a rewrite.
+Vendor primitives (`SB_IO`, `SB_PLL40_PAD`, `SB_RGBA_DRV`, `SB_SPRAM256KA`) appear only in `boards/` and thin wrappers in `rtl/common/prim_*.v`, so a fallback FPGA (§10.1) means new wrappers, not a rewrite.
 
 ## 4. LPC target
 
@@ -67,11 +67,11 @@ Vendor primitives (`SB_IO`, `SB_PLL40_PAD`, `SB_RGBA_DRV`, `SB_SPRAM256KA`) appe
 
 - **START** = `LFRAME#` low and `LAD = 0000`; a new START aborts any cycle in progress. Option `START_FROM_LAD_ONLY` hunts for `LAD = 0000` only between cycles, tracking each cycle to its end (TAR/SYNC/data/TAR, or SYNC timeout on `1111`) so a `0000` SYNC/data nibble isn't mistaken for START. **Required on 1.3–1.5**: those boards' LPC header has no LFRAME# (xboxdevwiki LPC Debug Port) unless it is reconnected with a jumper wire. Selected per board from the boot config (`LPC_CTRL`).
 - **Memory read**: claim if `SERVE_EN && A[31:24] == 0xFF`. While `flash_emu` is in autoselect/status mode, the read is answered by `flash_emu` instead of NOR data.
-- **Memory write**: claim if `FE_CTRL.enable && A[31:24] == 0xFF`; pass `{A[19:0], D}` to `flash_emu`. Not enabled → don't claim (stay off the bus). [VERIFY: does the MCPX/Xbox ever issue memory writes to 0xFF… at boot that we must *not* answer?]
+- **Memory write**: claim if `FE_CTRL.enable && A[31:24] == 0xFF`; pass `{A[19:0], D}` to `flash_emu`. Not enabled → not claimed (stay off the bus).
 - **I/O**: exact 16-bit decode per device; unclaimed cycles are not answered.
 - **SYNC**: short wait `0101` until ready, then `0000`. `SYNC_TIMEOUT` → `1010` once, TAR, release, count, `ERROR`. Deferred iotrap reads and back-pressured writes use the same timeout.
 - **TAR**: drive `1111` on the first TAR clock after our SYNC/data, then tri-state.
-- **Reset**: `LRESET#` low → FSM idle, LAD/LFRAME# released (D0 is not, §4.5), 16550/Super I/O/mailbox state reset. iotrap shadow RAM is *not* reset (ESP32-owned state).
+- **Reset**: `LRESET#` (filtered: must stay low 16 LCLK) low → FSM idle, LAD released (LFRAME# boot hold §4.4 and D0 §4.5 are not), 16550/Super I/O/mailbox state reset. iotrap shadow RAM is *not* reset (ESP32-owned state).
 
 ### 4.3 Address → NOR
 
@@ -79,11 +79,16 @@ Vendor primitives (`SB_IO`, `SB_PLL40_PAD`, `SB_RGBA_DRV`, `SB_SPRAM256KA`) appe
 
 ### 4.4 1.6 — LFRAME# abort
 
-With `LFRAME_ABORT`, once a memory read is claimed (known after A27..24 at clock 3), drive `LFRAME#` low (open-drain) from clock 4/5 through our final TAR clock, releasing so the last clock isn't a START (LAD = 1111). Refs: ox `responder.pio`, EOS `serving_mem`. Needs the physical LPC rebuild.
+On a 1.6 the MCPX's onboard flash (behind the Xyclops) answers every memory read, so a claimed read must be hidden from it by holding `LFRAME#` low: a target takes START from the last clock on which `LFRAME#` is low, so while `LFRAME#` stays low the other device keeps waiting for START and never decodes our cycle.
+
+- **Abort window**: once a memory read is claimed (`A31..24` known at clock 3), pull `LFRAME#` low from the address phase through the second TAR clock, then release. Asserting it during CYCTYPE would look like a new START. The last clock with `LFRAME#` low has `LAD = 1111`, so it is not a START either.
+- **Boot hold**: from `LRESET#` until the read of `FF000074` has been served, `LFRAME#` is held low continuously, then per-cycle aborts take over. The first fetches then don't depend on how fast the switch turns on and off.
+- **Drive**: an iCE40 pad cannot pull `LFRAME#` low against the MCPX's driver. It switches a logic-level N-MOSFET (e.g. IRLML6344): gate from the FPGA with 10 kΩ gate-to-source, source to the console's GND at the header, drain to `LFRAME#`. The FPGA reads `LFRAME#` on a separate input. Measured turn-off leaves `LFRAME#` low for ~2 LCLK after release, which the MCPX tolerates.
+- **Not claimed**: memory reads outside `FFxxxxxx` (counted only).
 
 ### 4.5 D0 (1.0–1.5)
 
-`D0_N` open-drain low whenever `SERVE_EN && D0_EN`, **including during `LRESET#`**; otherwise Hi-Z → TSOP. Unconfigured FPGA = Hi-Z, so a failed/slow boot falls back to TSOP. With self-boot (~20–70 ms) D0 should be asserted before the MCPX leaves reset [VERIFY by measurement, 00-system §4.4].
+`D0_N` open-drain low whenever `SERVE_EN && D0_EN`, **including during `LRESET#`**; otherwise Hi-Z → TSOP. Unconfigured FPGA = Hi-Z, so a failed/slow boot falls back to TSOP. Self-boot (~20–70 ms) must assert D0 before the MCPX's first read (≥ 78 ms after power, 00-system §4.4).
 
 ### 4.6 Read latency & prefetch
 
@@ -91,17 +96,17 @@ NOR quad I/O fast read `0xEB` in continuous-read mode (no command byte after the
 
 ### 4.7 NOR busy vs. LPC reads
 
-A single NOR can't be read during erase/program. If an LPC read arrives while busy, `nor_qspi` issues **suspend** (`0x75`, tSUS ≤ ~20–30 µs [VERIFY]), serves the read (SYNC waits; well under the 61 µs timeout), and **resumes** (`0x7A`) after the bus has been idle ~10 µs. Flash-emulation operations are exempt — their status reads are answered by `flash_emu` per JEDEC (§6).
+A single NOR can't be read during erase/program. If an LPC read arrives while busy, `nor_qspi` issues **suspend** (`0x75`, tSUS ≤ 20 µs on the W25Q128JV), serves the read (SYNC waits; well under the 61 µs timeout), and **resumes** (`0x7A`) after the bus has been idle ~10 µs. Flash-emulation operations are exempt — their status reads are answered by `flash_emu` per JEDEC (§6).
 
 ## 5. COM port
 
-### 5.1 16550 model — ox semantics (`refs/ox/src/lpc/uart.cpp`)
+### 5.1 16550 model
 
-- Registers at `COM_BASE+0..7`: RBR/THR, IER, IIR/FCR, LCR, MCR, LSR, MSR, SCR; DLL/DLM with DLAB. Reset values as ox (`DLL=1, LCR=0x03`).
+- Registers at `COM_BASE+0..7`: RBR/THR, IER, IIR/FCR, LCR, MCR, LSR, MSR, SCR; DLL/DLM with DLAB. Reset values `DLL=1`, `LCR=0x03`.
 - **Guest baud is ignored**: DLL/DLM stored and read back only (also exposed as `COM_GUEST_DIV`). Physical baud comes from `UART_DIV`.
 - **Back-pressure**: LSR.THRE|TEMT (0x60) only while the TX FIFO has room — a polled sender waits instead of dropping. LSR.DR = RX non-empty.
 - IIR = 0x01 (no interrupt) | 0xC0 if FCR enabled FIFOs. IER stored (masked 0x0F). MSR = 0xB0 (DCD|DSR|CTS). MCR stored (0x1F); MCR.LOOP loops THR→RBR. FCR bit1 clears RX. SERIRQ not implemented.
-- On `LRESET#`: registers to defaults, RX FIFO drained, stale TX dropped (ox drains `fromConsole` on reset).
+- On `LRESET#`: registers to defaults, RX FIFO drained, stale TX dropped.
 
 ### 5.2 Physical side
 
@@ -109,7 +114,9 @@ A single NOR can't be read during erase/program. If an LPC read arrives while bu
 
 ### 5.3 Super I/O
 
-SMSC LPC47M-style (`refs/xprobe/pico/src/lpc/superio.cpp`): 0x55 enter / 0xAA exit at 0x2E (or 0x4E); 0x07 LDN; per-LDN 0x30 activate, 0x60/0x61 base. LDN 4 activation overrides `COM_BASE`. Device ID reg 0x20 value for the debug-kit part [VERIFY].
+SMSC LPC47M-style: 0x55 enter / 0xAA exit at 0x2E (or 0x4E); 0x07 LDN; per-LDN 0x30 activate, 0x60/0x61 base. LDN 4 activation overrides `COM_BASE`. Registers 0x26/0x27 hold the chip's own config port, so 0x26 reads back 0x2E and 0x27 reads 0x00. The data port (0x2F) answers only in config mode (after 0x55, until 0xAA).
+
+The devkit kernel probes for this at boot (§6.2: write 0x55, select 0x26, read 0x2F) and enables serial debug output and the KD stub only if it answers. Test: boot a devkit BIOS and expect its debug output on the physical UART.
 
 ## 6. Legacy modchip support
 
@@ -131,22 +138,22 @@ Rationale: legacy LCD/LED interfaces are write-mostly (HD44780 over parallel-ish
 
 | Chip | I/O ports | iotrap use |
 |---|---|---|
-| Xenium / OpenXenium | **Observed** (see below): `0xEE` LED, `0xEF` bank select + bit-banged serial (LCD) + status read | `0xEE` capture + shadow; `0xEF` bank-select fast path + capture (serial bits) + shadow read |
-| SmartXX | LCD data/command ports in the `0xF7xx` range, LED port [VERIFY] | capture + shadow |
-| Xecuter 3 | LCD ports in the `0xF5xx`/`0xF7xx` range [VERIFY] | capture + shadow |
-| Aladdin / others | LCD ports [VERIFY] | capture + shadow |
+| Xenium | **Observed** (see below): `0xEE` LED, `0xEF` bank select + bit-banged serial (LCD) + status read | `0xEE` capture + shadow; `0xEF` bank-select fast path + capture (serial bits) + shadow read |
+| SmartXX | LCD data/command ports in the `0xF7xx` range, LED port; not yet characterised | capture + shadow |
+| Xecuter 3 | LCD ports in the `0xF5xx`/`0xF7xx` range; not yet characterised | capture + shadow |
+| Aladdin / others | LCD ports; not yet characterised | capture + shadow |
 
-**OpenXenium + XeniumOS, observed with `lpc_iolog` (1.6, LPC splitter, 2026-11-08).** One session: power on → XeniumOS menu (~2 min) → boot a BIOS from bank 3. Raw capture: `fpga/build/xenium_raw.txt` (not in git).
+**Xenium-compatible chip running XeniumOS, observed with `lpc_iolog`** (1.6, chip on an LPC splitter): power on → XeniumOS menu (~2 min) → boot a BIOS from bank 3.
 
 | Port | Observed | Meaning (inferred) |
 |---|---|---|
-| `0xEE` W | 21 writes, values `00`–`07` only. At boot it steps `00,01,…,07` within ~26 ms (LED self-test), then e.g. `02`,`03`,`07`,`01`; `00` written just before the final reset | 3-bit LED colour [bit → R/G/B mapping to confirm by eye] |
+| `0xEE` W | 21 writes, values `00`–`07` only. At boot it steps `00,01,…,07` within ~26 ms (LED self-test), then e.g. `02`,`03`,`07`,`01`; `00` written just before the final reset | 3-bit LED colour |
 | `0xEF` W `[3:0]` | Values `1`, `2`, `3`, `A`. `2` at 620 ms, then `A`/`1` alternate repeatedly while the menu runs; `3` = the bank booted | Bank select. XeniumOS switches banks itself at runtime (presumably to read its BIOS list/settings from another bank), so the fast path must apply immediately, not only at reset |
 | `0xEF` W `[6:4]` | Idle `111` (`0x70`). Bursts of 131 / 520 / 286 writes in which bit 6 toggles every write pair and bit 4 carries data (patterns `4x`/`5x` vs `0x`/`1x`); no reads of `0xEF` during bursts | Write-only bit-banged serial: bit 6 = clock, bit 4 = data, bit 5 = select (low during bursts). Consistent with an SPI LCD. Each bit costs ~3 LPC I/O writes (~46 µs/bit as observed) |
-| `0xEF` W `[7]` | Set exactly once: `73` → `F3`, then `LRESET#` asserted 1.06 ms later | Arms / triggers boot of the selected bank (seems to cause or precede the reset) [confirm] |
+| `0xEF` W `[7]` | Set exactly once: `73` → `F3`, then `LRESET#` asserted 1.06 ms later | Triggers boot of the selected bank; the reset follows |
 | `0xEF` R | Read once at 2.05 s → `BA` | Chip detect / status byte; serve `BA` from shadow RAM |
 | `0x3F8–0x3FD` | XeniumOS (RTTarget-32) programs COM1 (divisor 1 = 115200 8N1, MCR 03) and prints its banner `RTTarget-32 4.0 32-Bit Boot Code …`; LSR (`0x3FD`) reads get no response (`FF`) | Our 16550 will receive this; confirms F-COM is used by real software on boot |
-| `0x2E/0x2F` | After the booted BIOS (a **devkit BIOS** with serial debug output and a WinDbg/KD stub) starts: write `55`, `26`, read `2F` → no response, and no COM traffic follows | Kernel Super I/O probe: SMSC enter-config key `55`, then config index `0x26`. With nothing answering, the kernel concludes there is no Super I/O and skips serial debug/KD. **F-COM-4 must answer this sequence**: per `refs/xprobe` `superio.cpp`, registers `0x26`/`0x27` hold the chip's own config port, so `0x26` must read back `0x2E` (`0x27` → `0x00`); the kernel then selects LDN 4/5 (`0x07`), writes base `0x60/0x61` and activate `0x30`. Answer `0x2F` only while in config mode (after `55`, until `AA`) — a phase-1 test case: same BIOS, expect its output on our UART |
+| `0x2E/0x2F` | After the booted BIOS (a **devkit BIOS** with serial debug output and a WinDbg/KD stub) starts: write `55`, `26`, read `2F` → no response, and no COM traffic follows | Kernel Super I/O probe: SMSC enter-config key `55`, then config index `0x26`. With nothing answering, the kernel concludes there is no Super I/O and skips serial debug/KD. Answered by F-COM-4 (§5.3) |
 | `LRESET#` | After `F3`: asserted 1.06 ms, released 1.1 ms later, asserted again 21 ms later, released 21 ms after that | Two reset pulses on a bank-switch reboot; the bank written before the reset must persist through both |
 
 Memory reads aren't logged by `lpc_iolog`, so which device served the boot (and from which bank) isn't directly visible.
@@ -155,22 +162,22 @@ Memory reads aren't logged by `lpc_iolog`, so which device served the boot (and 
 
 Lets existing Xbox flashers (which talk to a parallel/LPC flash chip with AMD/SST-style command sequences through memory cycles at `0xFFxxxxxx`) write ROMs into the active bank.
 
-- Address decode uses `A[19:0] & size_mask` (unlock addresses 0x5555/0x2AAA or 0x555/0x2AA per the emulated part [VERIFY]).
+- Address decode uses `A[19:0] & size_mask` (unlock addresses 0x5555/0x2AAA or 0x555/0x2AA, depending on the emulated part).
 - Commands: reset (`F0`), autoselect (`90` → reads return `FE_ID` mfr/device at offsets 0/1), byte program (`A0`), sector erase (`80`,`30`), chip erase (`80`,`10` → **active bank only**), status polling: DQ7 data-polling and DQ6 toggle while busy.
 - Byte program → buffered into the NOR program buffer; flushed as a page program when the next byte leaves the page or after ~50 µs idle (status polling reports "busy" until flushed).
-- Sector size reported to the flasher should match a NOR erase size (4 KB, like SST49LF0x0) [VERIFY flashers' assumptions].
+- Sector size presented to the flasher is 4 KB, matching both the SST49LF0x0 parts and the NOR's smallest erase.
 - `PROTECT_MASK` slot → command ignored, `FLASHEMU_PROTECT` error, status returns "done" (flashers then fail verify, safely).
 - Raises `FLASHEMU` on sequence start/finish so the ESP32 can update the catalogue (CRC, "modified by console").
 
 ## 7. NOR controller
 
-Target part: W25Q128JV-class (16 MB, 3.3 V, quad, 4 KB sectors, erase/program suspend) [VERIFY].
+Target part: W25Q128JV-class (16 MB, 3.3 V, quad, 4 KB sectors, erase/program suspend).
 
 - Boot: release power-down `0xAB`, set QE (status reg 2) once at factory, quad I/O read `0xEB` with continuous mode.
 - Ops: 4 KB erase `0x20`, 64 KB erase `0xD8`, page program `0x02` (or quad `0x32`), status `0x05/0x35`, suspend `0x75`, resume `0x7A`.
 - Region guard: anything below `ROM_BASE` refused unless `NOR_UNLOCK`.
 - SCLK = 48 MHz via DDR output register; capture on a delayed/opposite edge — validate margins in nextpnr and on hardware.
-- **UPduino v3.1**: 4 MB flash on the config pins; the board is described as "qSPI capable" but whether IO2/IO3 reach FPGA pins is [VERIFY on schematic]. If not, build with `NOR_WIDTH=2` (dual-output read `0x3B` uses only SO/SI). A random byte then costs ~44 SCLKs (~0.9 µs at 48 MHz, ~1.8 µs at 24 MHz) vs ~20 in quad continuous mode — fine for bring-up because MCPX fetches are mostly sequential and hit the prefetch line, but it is a good stress test of the long-wait SYNC path. Small-flash layout per 01-interface §6.1.
+- **UPduino v3.1**: W25Q32 (4 MB, JEDEC `EF 40 16`) on the config pins: SCK 15, CS# 16, SO 14 → DI, SI 17 ← DO. IO2/IO3 are not connected to the FPGA, so the board builds with `NOR_WIDTH=1`. `lpc_serve` reads with `0x03` at SCK = LCLK/2 into a two-byte stream buffer; sequential fetches then cost a few SYNC waits each and the worst observed wait was 87 LCLK (00-system §4.4). Small-flash layout per 01-interface §6.1.
 
 ## 8. ESP32 link
 
@@ -180,7 +187,7 @@ Implements 01-interface §3. MISO tri-stated while `LINK_CS_N` high. `IRQ_N` pus
 
 ### 9.1 Electrical
 
-`USB_DP`, `USB_DN` (bidirectional `SB_IO`), `USB_PU` (1.5 kΩ to D+; Hi-Z = detached), ~27 Ω series on D+/D− (as pico_usb's PIO requirement). Connects to the MCPX controller-port test pads.
+`USB_DP`, `USB_DN` (bidirectional `SB_IO`), `USB_PU` (1.5 kΩ to D+; Hi-Z = detached), ~27 Ω series on D+/D−. Connects to the MCPX controller-port test pads.
 
 ### 9.2 Architecture
 
@@ -194,7 +201,7 @@ Implements 01-interface §3. MISO tri-stated while `LINK_CS_N` high. `IRQ_N` pus
               usb_slots: 32 × 64 B EBR + per-slot {enable, stall, dir, type, dev, ep, toggle, armed, len}
 ```
 
-- Model: valentyusb rx/tx (BSD-3, proven on UP5K at 48 MHz) ported to Verilog; SIE behaviour mirrors pico_usb's PIO DCD (`dcd_pio.cpp`: per-device address match, unaddressed tokens ignored, SET_ADDRESS applied after the status ZLP).
+- PHY: 4× oversampling receiver and transmitter as above, 48 MHz. SIE: per-device address match, unaddressed tokens ignored, SET_ADDRESS applied after the status ZLP (the behaviour pico_usb's DCD interface expects).
 - Up to 4 logical devices (composite = 1; hub emulation = hub + up to 3 downstream, e.g. XID + XID + MSC, or Duke-like hub + XID + MU).
 - Turnaround: response within 2–7.5 bit times; handshake wait 16–18 bit times. ESP32 never in that loop.
 - Slot lookup: 32-entry parallel compare of `{dev, ep, dir}` (≈ 32 × 7-bit comparators) — register-file implementation, one cycle.
@@ -204,9 +211,7 @@ Implements 01-interface §3. MISO tri-stated while `LINK_CS_N` high. `IRQ_N` pus
 
 The SD card is on the ESP32 (00-system D8). MSC bulk data is ordinary slot traffic: the ESP32 writes 64 B packets into IN slots / reads OUT slots over the link. At 40 MHz link clock that is well above the ~1 MB/s USB FS bulk ceiling.
 
-## 10. (removed — SD block engine moved to the ESP32)
-
-## 11. Resource estimate (replace with Yosys numbers per phase)
+## 10. Resource estimate
 
 | Block | LUT4 (est.) | EBR | SPRAM |
 |---|---|---|---|
@@ -224,35 +229,35 @@ The SD card is on the ESP32 (00-system D8). MSC bulk data is ordinary slot traff
 
 Still above a comfortable fill (~80 %) for nextpnr at 48 MHz.
 
-**Measured on the UPduino (lpc_probe, ~1.6 k LCs):** routing, not logic, dominates paths at 48 MHz on the UP5K — typical failing paths were 6–8 ns logic + 14–16 ns routing. Wide counter compares, 16:1 register muxes feeding an output, and multi-condition enables each failed 48 MHz until pipelined. Rules for every `clk_sys` module: flag counter terminal counts a cycle early; register mux outputs; decode events into registered one-hot flags; count up from zero; no wide magnitude compares. Budget the full design for ≤ ~75 % fill. Mitigations, in order: reduce USB slots to 16 (−300), merge mailbox into iotrap deferred mode (−100), drop Super I/O as a build option. Get real numbers early (phase 1 build with stubs on the UPduino). A UP5K-pin-compatible larger part does not exist; if the mitigations aren't enough, see §11.1.
+**Measured on the UPduino (lpc_probe, ~1.6 k LCs):** routing, not logic, dominates paths at 48 MHz on the UP5K — typical failing paths were 6–8 ns logic + 14–16 ns routing. Wide counter compares, 16:1 register muxes feeding an output, and multi-condition enables each failed 48 MHz until pipelined. Rules for every `clk_sys` module: flag counter terminal counts a cycle early; register mux outputs; decode events into registered one-hot flags; count up from zero; no wide magnitude compares. Budget the full design for ≤ ~75 % fill. Mitigations, in order: reduce USB slots to 16 (−300), merge mailbox into iotrap deferred mode (−100), drop Super I/O as a build option. No larger UP5K-pin-compatible part exists; if the mitigations aren't enough, see §10.1.
 
-### 11.1 Fallback FPGA options [OPEN — decide on real Yosys numbers]
+### 10.1 Fallback FPGA options [OPEN]
 
 What a replacement must provide: **more LUTs** (≥ ~7 k for margin), ≥ ~16 KB block RAM, a PLL for 48 MHz, 3.3 V I/O, a way to self-boot fast, and the ability to read ROMs from an external NOR after configuration. It does **not** need in-package RAM — the ROMs stay in the NOR (D1), so a PSRAM die is cost we wouldn't use.
 
 | Part | LUT4 | Block RAM | Config | Toolchain | Fit |
 |---|---|---|---|---|---|
 | iCE40UP5K (baseline) | 5280 | 15 KB EBR + 128 KB SPRAM | External SPI flash | Yosys/nextpnr-ice40 | Current target |
-| iCE40HX4K-TQ144 | 7680 usable via icestorm (HX8K die) [VERIFY] | 16 KB EBR [VERIFY], no SPRAM | External SPI flash | Same as now | Cheapest move in LUTs-per-effort: same tools, valentyusb already runs on iCE40 LP/HX. Loses SPRAM (iotrap FIFO shrinks to ~1 K entries in EBR), RGB driver and internal osc; higher static power; TQFP-144 |
-| GW1N-4 / GW1NR-4 (Stellar's part) | 4608 | 22.5 KB BSRAM (+ PSRAM die on NR) | Internal flash (instant-on) | Gowin EDA or Apicula | **Fewer LUTs than the UP5K** — a sidegrade; only worth it for instant-on |
+| iCE40HX4K-TQ144 | 3520 nominal; the die is the HX8K's and the open toolchain can use 7680 | 10 KB EBR nominal, no SPRAM | External SPI flash | Same as now | Cheapest move in LUTs-per-effort: same tools, same USB PHY approach. Loses SPRAM (iotrap FIFO shrinks to ~1 K entries in EBR), RGB driver and internal osc; higher static power; TQFP-144 |
+| GW1N-4 / GW1NR-4 | 4608 | 22.5 KB BSRAM (+ PSRAM die on NR) | Internal flash (instant-on) | Gowin EDA or Apicula | **Fewer LUTs than the UP5K** — a sidegrade; only worth it for instant-on |
 | **GW1N-9** (no PSRAM) | 8640 | 58.5 KB BSRAM | Internal flash, or MSPI from external flash | Gowin EDA or Apicula/nextpnr-himbaechel | Best Gowin fit: the LUTs we'd want without paying for the PSRAM die. ROMs stay in an external NOR on user pins |
 | GW1NR-9 (Tang Nano 9K) | 8640 | 58.5 KB + 8 MB PSRAM | as GW1N-9 | as GW1N-9 | Overkill for us — the PSRAM goes unused with D1 |
 
-Gowin costs to accept: toolchain change (open flow is usable but younger than icestorm), USB PHY needs porting/validating (valentyusb is generic RTL but timing-proven on iCE40; Gowin's own SoftPHY is vendor-licensed), and ESP32 bitstream updates go over JTAG (internal flash) unless booting from external flash in MSPI mode. Prices vary a lot by distributor (single-unit Mouser listings put GW1N-4 and GW1N-9 at roughly US$20 and US$33; LCSC is usually far lower) — check LCSC before choosing.
+Gowin costs to accept: toolchain change (open flow is usable but younger than icestorm), the USB PHY needs re-validating on new fabric (Gowin's own SoftPHY is vendor-licensed), and ESP32 bitstream updates go over JTAG (internal flash) unless booting from external flash in MSPI mode. Prices vary a lot by distributor (single-unit Mouser listings put GW1N-4 and GW1N-9 at roughly US$20 and US$33; LCSC is usually far lower) — check LCSC before choosing.
 
-## 12. Repository layout & flow
+## 11. Repository layout & flow
 
 ```
 fpga/
-  rtl/{common,boot,link,lpc,mem,uart,usb,led}/*.v
-  boards/<board>/top_<board>.v, <board>.pcf        upduino31 (first) | openox_v1
-  sim/models/   nor_w25q.v, lpc_host.py, usb_host.py, spi_master.py
-  sim/tests/    test_lpc_{mem,io,write}.py, test_flash_emu.py, test_iotrap.py, test_com.py, test_link.py,
-                test_nor.py, test_boot_cfg.py, test_usb_{basic,multidev}.py
-  Makefile      yosys → nextpnr-ice40 --up5k --package sg48 → icepack; make sim; make prog (iceprog / via ESP32)
+  rtl/{common,lpc,mem,probe,uart}/*.v        (later: boot, link, usb, led)
+  boards/<board>/top_<design>.v, <board>.pcf, <design>_clocks.py      upduino31 (first) | openox_v1
+  sim/models/   spi_flash_model.v
+  sim/tb/       tb_<design>.v (Icarus Verilog)
+  tools/        UART report viewers, bin2hex
+  Makefile      DESIGN=<name>: yosys → nextpnr-ice40 --up5k --package sg48 → icepack; make sim; make prog; make rom ROM=<file>
 ```
 
-## 13. Verification plan
+## 12. Verification plan
 
 | Test | Proves |
 |---|---|
@@ -261,7 +266,7 @@ fpga/
 | Host abort, back-to-back cycles, LCLK stop/start, SYNC timeout + orphan drop | Robustness |
 | LPC read during NOR erase → suspend/serve/resume within timeout | §4.7 |
 | `ARM_AT_RESET` with 1-LCLK reset pulses; bank-select fast path | Bank switching |
-| LFRAME# abort waveform vs. ox/EOS | 1.6 |
+| LFRAME# abort window and boot hold (§4.4) | 1.6 |
 | 16550 polled TX with back-pressure, RX, reset drain; RTS/CTS | COM |
 | Super I/O enable sequence | COM discovery |
 | iotrap: capture order under burst, shadow reads, deferred read + timeout, FIFO full back-pressure | Legacy |

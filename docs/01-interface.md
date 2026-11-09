@@ -14,7 +14,7 @@ Single source of truth for everything crossing the ESP32/FPGA boundary, plus the
 | `CFG_SI` (NOR→FPGA) | `SPI_SI` | DO/IO1 | HSPI MISO | NOR drives | NOR drives |
 | `NOR_IO2`, `NOR_IO3` | user I/O | WP#/IO2, HOLD#/IO3 | — (pull-ups) | FPGA (quad) | Hi-Z, pulled up |
 
-[VERIFY] SO/SI direction naming against Lattice FPGA-TN-02001 for master vs. slave mode. ESP32 keeps all its config-bus pins **Hi-Z unless it is holding `CRESET_B` low**. Series resistors (~33 Ω) on the ESP32 side limit damage from a contention bug.
+SO/SI are named from the FPGA's SPI-master view (UP5K-SG48 pins: SCK 15, SS 16, SO 14, SI 17). The ESP32 keeps all its config-bus pins **Hi-Z unless it is holding `CRESET_B` low**. Series resistors (~33 Ω) on the ESP32 side limit damage from a contention bug.
 
 ### 1.2 Link and control
 
@@ -43,7 +43,7 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 ### 2.3 ESP32 slave-configures the FPGA (fallback / development)
 
 1. Put NOR in deep power-down (`0xB9`) via §2.2 so it ignores the bitstream.
-2. `CS_N = 0`, `CRESET_N = 0` ≥ 200 ns, `CRESET_N = 1` with CS still low, wait ≥ 1200 µs [VERIFY for UP5K].
+2. `CS_N = 0`, `CRESET_N = 0` ≥ 200 ns, `CRESET_N = 1` with CS still low, wait for the device's configuration-memory clear time (Lattice FPGA-TN-02001; 1200 µs is safe).
 3. CS high, 8 dummy clocks; CS low, send bitstream MSB-first; CS high, ≥ 100 dummy clocks; `CDONE` must be high, then ≥ 49 more clocks.
 4. The design must release the NOR from power-down (`0xAB`) before reading boot config.
 
@@ -124,7 +124,7 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 | 0x2C–0x2F | `MEM_READ_COUNT` | RO | Since reset |
 | 0x30–0x37 | `PROTECT_MASK` | RW | 64-bit mask, one bit per 256 KB slot: flash emulation may not erase/program it |
 
-NOR address served = `ROM_BASE + ACTIVE_BANK.SLOT * 256 KB + (A[19:0] & size_mask)` for every memory read with `A[31:24] = 0xFF` (`ROM_BASE` = `0x100000`, §6).
+NOR address served = `ROM_BASE + ACTIVE_BANK.SLOT * 256 KB + (A[19:0] & size_mask)` for every memory read with `A[31:24] = 0xFF` (`ROM_BASE` from the boot config, §6).
 
 ### 5.3 COM / UART / Super I/O — `0x0040`
 
@@ -132,7 +132,7 @@ NOR address served = `ROM_BASE + ACTIVE_BANK.SLOT * 256 KB + (A[19:0] & size_mas
 |---|---|---|---|
 | 0x40 | `COM_CTRL` | RW | bit0 `COM_EN`; bit1 `ROUTE` (0 = UART pins, 1 = ESP32); bit2 `RTSCTS` (hardware flow control on the physical UART); bit3 `SUPERIO_EN`; bit4 `SUPERIO_4E`; bit5 `UART_LOOPBACK` |
 | 0x41–0x42 | `COM_BASE` | RW | Default 0x03F8; overridden by Super I/O LDN 4 when the guest activates it |
-| 0x43–0x44 | `UART_DIV` | RW | Baud = 48 MHz / `UART_DIV`; default 417 (115 200). 52 ≈ 921 600, 16 = 3 M. Guest DLL/DLM never affect it (ox behaviour). |
+| 0x43–0x44 | `UART_DIV` | RW | Baud = 48 MHz / `UART_DIV`; default 417 (115 200). 52 ≈ 921 600, 16 = 3 M. Guest DLL/DLM never affect it. |
 | 0x45 | `COM_TX_LEVEL` | RO | Xbox→out bytes queued (sat. 255) |
 | 0x46 | `COM_RX_LEVEL` | RO | in→Xbox bytes queued |
 | 0x47 | `COM_STATUS` | RO | bit0 guest activated COM via Super I/O; bit1 RX overflow seen; bit2 guest DLL/DLM last written (debug: `0x48–0x49`) |
@@ -188,7 +188,7 @@ Event record (SPACE 3 port 2, 4 bytes, little-endian): `port[15:0]`, `data[7:0]`
 | Addr | Name | Access | Description |
 |---|---|---|---|
 | 0x100 | `MBX_CTRL` | RW | bit0 enable; bit1 `RESET_REQ` (W1C) |
-| 0x101–0x102 | `MBX_BASE` | RW | I/O base of the 4-port mailbox (ox console-port layout, Q5) |
+| 0x101–0x102 | `MBX_BASE` | RW | I/O base of the 4-port mailbox (layout per 00-system Q5) |
 | 0x103–0x104 | `MBX_RX_LEVEL` | RO | |
 | 0x105–0x106 | `MBX_TX_FREE` | RO | |
 
@@ -201,7 +201,7 @@ Event record (SPACE 3 port 2, 4 bytes, little-endian): `port[15:0]`, `data[7:0]`
 
 ### 5.8 Reserved — `0x0120`
 
-Formerly the SD block engine; the SD card moved to the ESP32 (00-system D8).
+Reserved.
 
 ### 5.9 USB device — `0x0200`
 
@@ -236,7 +236,7 @@ Endpoint slots (k = 0..31; slot 2d and 2d+1 are reserved as device *d*'s EP0 IN/
 
 Hardware behaviour the DCD relies on:
 
-- Token → find the enabled device whose address matches (or with "answers at 0" for address 0); no match → ignore silently (no handshake), as pico_usb's PIO DCD does.
+- Token → find the enabled device whose address matches (or with "answers at 0" for address 0); no match → ignore silently (no handshake).
 - Then find the enabled slot with (device, EP number, direction); none → ignore (no handshake).
 - **SETUP always ACKed** into that device's SETUP buffer; clears its EP0 STALLs, disarms EP0 IN, sets EP0 toggles to 1, sets `USB_SETUP_DEV[d]`.
 - IN on unarmed slot → NAK. Armed → DATAx; ACK → flip toggle, disarm, `IN_DONE[k]`; no ACK → stay armed.
@@ -257,7 +257,7 @@ Hardware behaviour the DCD relies on:
 | 0x080000 | 512 KB | Reserved (logs, personality data) |
 | **0x100000** (`ROM_BASE`) | 15 MB | ROM banks: 60 × 256 KB slots |
 
-**Small-flash layout (≤ 4 MB, e.g. UPduino v3.1 dev board):**
+**Small-flash layout (≤ 4 MB, e.g. the UPduino v3.1 dev board):**
 
 | Offset | Size | Contents |
 |---|---|---|
@@ -265,7 +265,7 @@ Hardware behaviour the DCD relies on:
 | 0x020000 | 4 KB | Boot config record A |
 | 0x021000 | 4 KB | Boot config record B |
 | 0x022000 | 120 KB | ROM catalogue + metadata |
-| **0x040000** (`ROM_BASE`) | 3.75 MB on 4 MB (768 KB on 1 MB) | ROM banks: 15 × 256 KB slots (3 on a 1 MB part — enough for 256/512 KB tests, not a 1 MB image) |
+| **0x040000** (`ROM_BASE`) | 3.75 MB | ROM banks: 15 × 256 KB slots |
 
 The boot-config address is a per-board build parameter (`BOOT_CFG_ADDR`); `ROM_BASE` comes from the record (§6.2), so one RTL serves both layouts. No bitstream-B slot on small parts — updates are written in place, with the ESP32's golden image as the safety net.
 

@@ -1,5 +1,4 @@
 # UPduino v3.1 pin map (all designs; unused names are ignored via -nowarn)
-# Source: tinyvision-ai-inc/UPduino-v3.0 RTL/common/upduino.pcf
 # Header labels on the board are the FPGA package pin numbers ("gpio_N" = pin N).
 
 # 12 MHz oscillator -> IOB_25B_G3 (global). Requires R16 ("OSC") shorted.
@@ -28,7 +27,7 @@ set_io -nowarn uart_rx 46
 # Power the UPduino (USB) before the Xbox, and switch the Xbox off first.
 # Pin 35 is NOT usable while the PLL is in use (shares the PLL output I/O site).
 set_io -nowarn lpc_reset_n   32
-set_io -nowarn lpc_frame_n   31   # no pull-up: driven low for the 1.6 abort (EOS: pull must be off)
+set_io -nowarn lpc_frame_n   31   # no pull-up: driven low for the 1.6 abort
 set_io -nowarn lpc_clk       37   # IOT_45a_G1, global-capable
 set_io -nowarn lpc_lad[0]    34
 set_io -nowarn lpc_lad[1]    43

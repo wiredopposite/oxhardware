@@ -1,5 +1,5 @@
 // UPduino v3.1 design "lpc_iolog": passive LPC traffic logger for reverse-engineering
-// modchip register use (e.g. an OpenXenium on an LPC splitter).
+// modchip register use (another chip on an LPC splitter).
 //
 // Streams every LPC target cycle EXCEPT memory reads (I/O reads/writes with data, memory
 // writes, DMA) plus power / LRESET# events, timestamped in microseconds since the FPGA

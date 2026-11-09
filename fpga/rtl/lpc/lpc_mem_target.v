@@ -13,13 +13,13 @@
 // START comes from LAD alone (LFRAME# is not on the header of 1.3-1.5, and on 1.6 we
 // drive it ourselves): a 0000 nibble while hunting. Hunting only runs between cycles —
 // cycles we don't claim (I/O, memory writes) are tracked through TAR/SYNC/data so a 0000
-// SYNC or data nibble isn't taken for a START (as ox and OpenXenium do).
+// SYNC or data nibble isn't taken for a START.
 //
 // LFRAME# abort (1.6): with lframe_abort=1, LFRAME# is pulled low (open-drain) from the
 // address phase (clock 3, the first clock after CYCTYPE is known; asserting it during
-// CYCTYPE would look like a new frame to the MCPX) until the second TAR clock, as EOS /
-// OpenXenium do. The last clock with LFRAME# low has LAD = 1111, so it is not a START.
-// The pad needs real drive (other designs use 12 mA or a MOSFET, no pull-up).
+// CYCTYPE would look like a new frame to the MCPX) until the second TAR clock.
+// The last clock with LFRAME# low has LAD = 1111, so it is not a START.
+// An iCE40 pad cannot overdrive the MCPX, so lframe_oe switches an external N-MOSFET.
 // Before that, LFRAME# is held low continuously from reset until the read of ..74 (boot
 // hold, see 'hold'). Memory reads outside FFxxxxxx are not claimed (counted instead).
 //
@@ -96,7 +96,7 @@ module lpc_mem_target #(
     reg [11:0] wait_cnt;
     reg        lf_cyc;                // per-cycle abort window
     reg        addr_ok;               // A[31:24] == FF so far
-    // Boot hold (OpenXenium / genuine Xenium): LFRAME# held low continuously from reset
+    // Boot hold: LFRAME# held low continuously from reset
     // until the read of address ..74 has been served, then per-cycle aborts only. The
     // Xyclops never sees a valid START while LFRAME# stays low, and the first reads don't
     // depend on how fast the abort switch turns on and off.

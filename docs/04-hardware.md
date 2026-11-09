@@ -106,7 +106,7 @@ Power the UPduino (USB) before the console and switch the console off first. Gro
 | A | **UPduino v3.1** + a 3.3 V USB-UART | Toolchain, clocks, UART | Done |
 | B | UPduino on the LPC header, passive (`lpc_probe`, `lpc_iolog`) | Cold-boot timing (00-system §4.4); legacy register traffic (02-fpga §6.2) | Done on 1.6 |
 | C | UPduino serving from its flash (`lpc_serve`) with the LFRAME# switch | Boot a ROM on a 1.6 | Done |
-| D | + COM 16550 and Super I/O | Devkit kernel debug output on the PC | |
+| D | + COM 16550 and Super I/O (`lpc_com`) | Devkit kernel debugger on the PC | Done (WinDbg over the UART) |
 | E | + boot config, ESP32 devkit on the link pins and config bus | ESP32 programs flash, resets FPGA, link at 20 → 40 MHz; bank switching | |
 | F | + controller-port pigtail | XID enumeration; composite vs. hub experiment; BT playing | |
 | G | Custom PCB v1 | Everything; 1.0–1.5 via D0; SD; LCD | |

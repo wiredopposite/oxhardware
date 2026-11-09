@@ -74,11 +74,13 @@ module top_lpc_serve (
     reg force_gate = 1'b0;
     assign lframe_gate = {4{lframe_oe | force_gate}};
 
-    lpc_mem_target u_tgt (
+    lpc_target u_tgt (
         .lclk(lpc_clk), .lreset_n(lpc_reset_n), .lframe_n(lframe_sense), .lad_in(lpc_lad),
         .lad_out(lad_out), .lad_oe(lad_oe), .lframe_oe(lframe_oe),
-        .serve_en(1'b1), .lframe_abort(1'b1), .rom_base(ROM_BASE), .rom_mask(ROM_MASK),
+        .serve_en(1'b1), .lframe_abort(1'b1), .io_en(1'b0),
+        .rom_base(ROM_BASE), .rom_mask(ROM_MASK),
         .req(req), .req_addr(req_addr), .ack(t_ack), .ack_data(t_ack_data),
+        .io_addr(), .io_write(), .io_addr_nxt(), .io_addr_last(), .io_hit(1'b0), .io_rd(), .io_rdata(8'h00), .io_wr(), .io_wdata(), .io_done(), .io_took(),
         .stat_served(st_served), .stat_timeout(st_timeout), .stat_wait(st_wait),
         .in_reset(tgt_in_reset), .stat_recover(st_recover), .stat_badaddr(st_badaddr),
         .stat_addr(st_addr), .stat_data(st_data), .lframe_holding(holding),
@@ -259,7 +261,7 @@ module top_lpc_serve (
         .RGB0_CURRENT("0b000001"), .RGB1_CURRENT("0b000001"), .RGB2_CURRENT("0b000001")
     ) u_rgb (
         .CURREN(1'b1), .RGBLEDEN(1'b1),
-        .RGB0PWM(pll_locked && act == 0), .RGB1PWM(pll_locked && act != 0),
+        .RGB0PWM(pll_locked && act == 0 && !force_gate), .RGB1PWM(pll_locked && act != 0 && !force_gate),
         .RGB2PWM((!pll_locked && lf_cnt[12]) || force_gate),
         .RGB0(led_green), .RGB1(led_blue), .RGB2(led_red)
     );

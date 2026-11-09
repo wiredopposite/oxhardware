@@ -19,6 +19,7 @@ module uart_rx #(
     localparam [1:0] S_IDLE = 2'd0, S_START = 2'd1, S_DATA = 2'd2, S_STOP = 2'd3;
 
     reg [1:0]    sync;
+    initial valid = 1'b0;
     wire         rx_s = sync[1];
     reg [1:0]    state;
     reg [CW-1:0] cnt;

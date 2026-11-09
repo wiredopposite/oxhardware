@@ -105,8 +105,8 @@ A single NOR can't be read during erase/program. If an LPC read arrives while bu
 - Registers at `COM_BASE+0..7`: RBR/THR, IER, IIR/FCR, LCR, MCR, LSR, MSR, SCR; DLL/DLM with DLAB. Reset values `DLL=1`, `LCR=0x03`.
 - **Guest baud is ignored**: DLL/DLM stored and read back only (also exposed as `COM_GUEST_DIV`). Physical baud comes from `UART_DIV`.
 - **Back-pressure**: LSR.THRE|TEMT (0x60) only while the TX FIFO has room — a polled sender waits instead of dropping. LSR.DR = RX non-empty.
-- IIR = 0x01 (no interrupt) | 0xC0 if FCR enabled FIFOs. IER stored (masked 0x0F). MSR = 0xB0 (DCD|DSR|CTS). MCR stored (0x1F); MCR.LOOP loops THR→RBR. FCR bit1 clears RX. SERIRQ not implemented.
-- On `LRESET#`: registers to defaults, RX FIFO drained, stale TX dropped.
+- IIR = 0x01 (no interrupt) | 0xC0 if FCR enabled FIFOs. IER stored (masked 0x0F). MSR = 0xB0 (DCD|DSR|CTS). MCR stored (0x1F), loopback not implemented. FCR bit1 clears RX. SERIRQ not implemented.
+- On `LRESET#`: registers to defaults, RX FIFO drained; the TX FIFO keeps draining to the UART so output from just before a reboot is not lost.
 
 ### 5.2 Physical side
 

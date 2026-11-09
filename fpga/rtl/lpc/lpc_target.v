@@ -1,33 +1,38 @@
-// LPC memory-read target (LCLK domain) — phase-1 BIOS serving.
+// LPC target (LCLK domain): BIOS memory reads and I/O reads/writes.
 //
-// Claims every LPC memory read (START 0000, CYCTYPE 010x), maps the address into a
-// flash window and returns the byte from a byte source (spi_stream) with SYNC long-wait
-// until it arrives. Other cycles are followed to their end but never driven.
+// Memory reads (START 0000, CYCTYPE 010x) in FFxxxxxx are mapped into a flash window
+// and answered from a byte source (spi_stream) with SYNC long-wait until it arrives.
+// I/O cycles are offered to a port bus: the full address appears on io_addr_nxt while
+// io_addr_last is high, the port decodes register it, and if io_hit is high on the next
+// clock the cycle is claimed with a ready SYNC (no wait states). Everything else is followed to its end but never driven.
 //
 // Timing (clock j = LCLK during which the host drives nibble j):
-//   j=0 START, 1 CYCTYPE, 2-9 A31..A0, 10-11 TAR (host), 12.. SYNC (us), D3:0, D7:4,
-//   then one TAR clock driving 1111 and release on the second.
+//   mem read  j=0 START, 1 CYCTYPE, 2-9 A31..A0, 10-11 TAR, 12.. SYNC, D3:0, D7:4, TAR
+//   I/O read  j=0 START, 1 CYCTYPE, 2-5 A15..A0, 6-7 TAR, 8 SYNC, 9-10 data, 11-12 TAR
+//   I/O write j=0 START, 1 CYCTYPE, 2-5 A15..A0, 6-7 data, 8-9 TAR, 10 SYNC, 11-12 TAR
+// We drive 1111 on the first TAR clock after our SYNC/data and release on the second.
 // Inputs are registered once (lad_q holds nibble j during clock j+1), and outputs are
-// registered, so the FSM decides the nibble for clock t on the edge that starts it.
+// registered, so the edge that starts clock e sees nibble e-2 and decides the nibble
+// driven during clock e.
 //
 // START comes from LAD alone (LFRAME# is not on the header of 1.3-1.5, and on 1.6 we
-// drive it ourselves): a 0000 nibble while hunting. Hunting only runs between cycles —
-// cycles we don't claim (I/O, memory writes) are tracked through TAR/SYNC/data so a 0000
-// SYNC or data nibble isn't taken for a START.
+// drive it ourselves): a 0000 nibble while hunting. Hunting only runs between cycles;
+// cycles we don't claim are tracked through TAR/SYNC/data so a 0000 SYNC or data nibble
+// isn't taken for a START.
 //
-// LFRAME# abort (1.6): with lframe_abort=1, LFRAME# is pulled low (open-drain) from the
-// address phase (clock 3, the first clock after CYCTYPE is known; asserting it during
-// CYCTYPE would look like a new frame to the MCPX) until the second TAR clock.
+// LFRAME# abort (1.6, memory reads only): with lframe_abort=1, LFRAME# is pulled low
+// from the address phase (clock 3, the first clock after CYCTYPE is known; asserting it
+// during CYCTYPE would look like a new frame to the MCPX) until the second TAR clock.
 // The last clock with LFRAME# low has LAD = 1111, so it is not a START.
 // An iCE40 pad cannot overdrive the MCPX, so lframe_oe switches an external N-MOSFET.
 // Before that, LFRAME# is held low continuously from reset until the read of ..74 (boot
 // hold, see 'hold'). Memory reads outside FFxxxxxx are not claimed (counted instead).
 //
-// Safety: if the byte doesn't arrive within SYNC_TIMEOUT clocks, SYNC error (1010) is
-// driven and the cycle ends normally.
+// Safety: if a memory byte doesn't arrive within SYNC_TIMEOUT clocks, SYNC error (1010)
+// is driven and the cycle ends normally.
 `default_nettype none
 
-module lpc_mem_target #(
+module lpc_target #(
     parameter integer SYNC_TIMEOUT = 2048
 ) (
     input  wire        lclk,
@@ -40,6 +45,7 @@ module lpc_mem_target #(
     // configuration (quasi-static)
     input  wire        serve_en,
     input  wire        lframe_abort,
+    input  wire        io_en,
     input  wire [23:0] rom_base,          // flash address of the image
     input  wire [23:0] rom_mask,          // image size - 1 (e.g. 0x3FFFF for 256 KB)
     // byte source
@@ -47,12 +53,24 @@ module lpc_mem_target #(
     output reg  [23:0] req_addr,
     input  wire        ack,
     input  wire [7:0]  ack_data,
+    // I/O port bus (LCLK domain)
+    output reg  [15:0] io_addr,
+    output reg         io_write,          // direction of the current I/O cycle
+    output wire [15:0] io_addr_nxt,       // full address, valid while io_addr_last
+    output wire        io_addr_last,      // last address nibble: register decodes now
+    input  wire        io_hit,            // registered decode, valid the clock after io_addr_last
+    output reg         io_rd,             // pulse: read claimed; io_rdata sampled
+    input  wire [7:0]  io_rdata,
+    output reg         io_wr,             // pulse: write claimed, io_wdata valid
+    output reg  [7:0]  io_wdata,
+    output reg         io_done,           // pulse: claim decided for an I/O cycle
+    output reg         io_took,           // with io_done: 1 = claimed
     // statistics (LCLK domain)
-    output reg         stat_served,       // pulse per served read
+    output reg         stat_served,       // pulse per served memory read
     output reg         stat_timeout,      // pulse per SYNC timeout
     output reg  [11:0] stat_wait,         // SYNC wait clocks of the last served read
     output wire        in_reset,          // filtered LRESET# (1 = in reset)
-    output reg         stat_recover,      // pulse: illegal state or stray drive cleared
+    output reg         stat_recover,      // pulse: stray drive cleared
     output reg         stat_badaddr,      // pulse: memory read with A[31:24] != FF (ignored)
     output reg  [23:0] stat_addr,         // flash address of the last served read
     output reg  [7:0]  stat_data,         // byte returned by the last served read
@@ -63,11 +81,12 @@ module lpc_mem_target #(
                      S_SYNC = 4'd4, S_DLO = 4'd5, S_DHI = 4'd6, S_TAR1 = 4'd7,
                      S_REL = 4'd8,
                      // following a cycle we don't claim
-                     S_SKIP1 = 4'd9, S_SKSYNC = 4'd10, S_SKIP2 = 4'd11;
+                     S_SKIP1 = 4'd9, S_SKSYNC = 4'd10, S_SKIP2 = 4'd11,
+                     // I/O cycles
+                     S_IOADDR = 4'd12, S_IOTAR = 4'd13, S_IOWD = 4'd14, S_IOSY = 4'd15;
 
     // LRESET# is filtered: it must stay low for 16 consecutive clocks to count as a reset
-    // (a real LRESET# lasts milliseconds; short glitches coupled from our own LAD/LFRAME#
-    // switching were seen on the bench and must not abort a cycle).
+    // (a real LRESET# lasts milliseconds; short glitches must not abort a cycle).
     reg [3:0] lad_q;
     reg [1:0] lrst_s = 2'b00;
     reg [3:0] lrst_lo = 4'd0;
@@ -94,32 +113,36 @@ module lpc_mem_target #(
     reg        have;
     reg [7:0]  data;
     reg [11:0] wait_cnt;
-    reg        lf_cyc;                // per-cycle abort window
-    reg        addr_ok;               // A[31:24] == FF so far
-    // Boot hold: LFRAME# held low continuously from reset
-    // until the read of address ..74 has been served, then per-cycle aborts only. The
-    // Xyclops never sees a valid START while LFRAME# stays low, and the first reads don't
-    // depend on how fast the abort switch turns on and off.
+    reg        lf_cyc;             // per-cycle abort window
+    reg        addr_ok;            // A[31:24] == FF so far
+    reg        is_io;              // current claimed cycle is I/O
+    // Boot hold: LFRAME# held low continuously from reset until the read of address ..74
+    // has been served, then per-cycle aborts only. The Xyclops never sees a valid START
+    // while LFRAME# stays low, and the first reads don't depend on how fast the abort
+    // switch turns on and off.
     reg        hold = 1'b0;
     assign lframe_oe      = lf_cyc | hold;
     assign lframe_holding = hold;
     assign dbg_state      = state;
+    assign io_addr_nxt    = {io_addr[11:0], lad_q};
+    assign io_addr_last   = (state == S_IOADDR) && (nib == 4'd1);
 
     // States in which we are listening, not driving. Fail-safe: in any of them both
     // outputs are forced off, so a corrupted state (e.g. an LCLK glitch) can't leave us
-    // driving the bus; an illegal state code returns to hunting.
+    // driving the bus.
     wire listening = (state == S_IDLE) || (state == S_CT) || (state == S_SKIP1) ||
-                     (state == S_SKSYNC) || (state == S_SKIP2);
-    wire legal     = listening || (state == S_ADDR) || (state == S_TAR) ||
-                     (state == S_SYNC) || (state == S_DLO) || (state == S_DHI) ||
-                     (state == S_TAR1) || (state == S_REL);
+                     (state == S_SKSYNC) || (state == S_SKIP2) || (state == S_IOADDR) ||
+                     (state == S_IOTAR) || (state == S_IOWD) || (state == S_IOSY);
 
     always @(posedge lclk) begin
         stat_served  <= 1'b0;
         stat_timeout <= 1'b0;
         stat_recover <= 1'b0;
         stat_badaddr <= 1'b0;
-        if ((listening && (lad_oe || (lf_cyc && state != S_CT))) || !legal)
+        io_rd        <= 1'b0;
+        io_wr        <= 1'b0;
+        io_done      <= 1'b0;
+        if (listening && (lad_oe || (lf_cyc && state != S_CT)))
             stat_recover <= 1'b1;
         if (ack) begin
             have <= 1'b1;
@@ -127,12 +150,12 @@ module lpc_mem_target #(
             req  <= 1'b0;
         end
 
-        if (!lrst_q || !serve_en) begin
-            hold      <= lframe_abort && serve_en;
-            state     <= S_IDLE;
-            lad_oe    <= 1'b0;
+        if (!lrst_q) begin
+            hold   <= lframe_abort && serve_en;
+            state  <= S_IDLE;
+            lad_oe <= 1'b0;
             lf_cyc <= 1'b0;
-            req       <= 1'b0;
+            req    <= 1'b0;
         end else begin
             if (listening) begin
                 lad_oe <= 1'b0;
@@ -145,18 +168,25 @@ module lpc_mem_target #(
             S_CT: begin                                       // CYCTYPE (j=1) at edge 3
                 ones <= 2'd0;
                 case (lad_q[3:1])
-                    3'b010: begin                             // memory read: claim
-                        state   <= S_ADDR;
-                        nib     <= 4'd8;
-                        addr_ok <= 1'b1;
-                        if (lframe_abort) lf_cyc <= 1'b1;  // low from clock 3
-                    end
-                    3'b000: begin                             // I/O read: A x4, TAR x2
-                        skip_n <= 4'd6; skip_after <= 4'd4; state <= S_SKIP1;
-                    end
-                    3'b001: begin                             // I/O write: A x4, D x2, TAR x2
-                        skip_n <= 4'd8; skip_after <= 4'd2; state <= S_SKIP1;
-                    end
+                    3'b010:                                   // memory read
+                        if (serve_en) begin
+                            state   <= S_ADDR;
+                            nib     <= 4'd8;
+                            addr_ok <= 1'b1;
+                            if (lframe_abort) lf_cyc <= 1'b1;  // low from clock 3
+                        end else begin                        // A x8, TAR x2
+                            skip_n <= 4'd10; skip_after <= 4'd4; state <= S_SKIP1;
+                        end
+                    3'b000, 3'b001:                           // I/O read / write
+                        if (io_en) begin
+                            io_write <= lad_q[1];
+                            nib      <= 4'd4;
+                            state    <= S_IOADDR;
+                        end else if (!lad_q[1]) begin         // A x4, TAR x2
+                            skip_n <= 4'd6; skip_after <= 4'd4; state <= S_SKIP1;
+                        end else begin                        // A x4, D x2, TAR x2
+                            skip_n <= 4'd8; skip_after <= 4'd2; state <= S_SKIP1;
+                        end
                     3'b011: begin                             // memory write: A x8, D x2, TAR x2
                         skip_n <= 4'd12; skip_after <= 4'd2; state <= S_SKIP1;
                     end
@@ -177,6 +207,52 @@ module lpc_mem_target #(
             S_SKIP2:                                          // data / TAR after SYNC
                 if (skip_n == 4'd1) state <= S_IDLE;
                 else                skip_n <= skip_n - 1'b1;
+            // ------------------------------------------------ I/O cycles
+            S_IOADDR: begin                         // A15..A0 at edges 4..7
+                io_addr <= {io_addr[11:0], lad_q};
+                nib     <= nib - 1'b1;
+                if (nib == 4'd1) begin
+                    nib   <= 4'd2;
+                    state <= io_write ? S_IOWD : S_IOTAR;
+                end
+            end
+            S_IOTAR: begin                          // edge 8: SYNC for clock 8, or not ours
+                io_done <= 1'b1;
+                io_took <= io_hit;
+                if (io_hit) begin
+                    lad_oe  <= 1'b1;
+                    lad_out <= 4'b0000;
+                    data    <= io_rdata;
+                    have    <= 1'b1;
+                    io_rd   <= 1'b1;
+                    is_io   <= 1'b1;
+                    state   <= S_DLO;
+                end else begin                      // TAR x1 left, then someone's SYNC
+                    skip_n <= 4'd1; skip_after <= 4'd4; state <= S_SKIP1;
+                end
+            end
+            S_IOWD: begin                           // write data at edges 8, 9
+                if (nib == 4'd2) io_wdata[3:0] <= lad_q;
+                else begin
+                    io_wdata[7:4] <= lad_q;
+                    state         <= S_IOSY;
+                end
+                nib <= nib - 1'b1;
+            end
+            S_IOSY: begin                           // edge 10: SYNC for clock 10
+                io_done <= 1'b1;
+                io_took <= io_hit;
+                if (io_hit) begin
+                    lad_oe  <= 1'b1;
+                    lad_out <= 4'b0000;
+                    io_wr   <= 1'b1;
+                    is_io   <= 1'b1;
+                    state   <= S_TAR1;
+                end else begin                      // TAR x1 left, then someone's SYNC
+                    skip_n <= 4'd1; skip_after <= 4'd2; state <= S_SKIP1;
+                end
+            end
+            // ------------------------------------------------ memory reads
             S_ADDR: begin                           // A31..A0 processed at edges 4..11
                 addr <= {addr[23:0], lad_q};
                 nib  <= nib - 1'b1;
@@ -193,6 +269,7 @@ module lpc_mem_target #(
                     req      <= 1'b1;
                     req_addr <= rom_base | ({addr[19:0], lad_q} & rom_mask);
                     have     <= 1'b0;
+                    is_io    <= 1'b0;
                     state    <= S_TAR;
                 end
             end
@@ -225,28 +302,30 @@ module lpc_mem_target #(
                 state   <= S_DHI;
             end
             S_DHI: begin
-                lad_out     <= data[7:4];
-                stat_served <= 1'b1;
-                stat_addr   <= req_addr;
-                stat_data   <= data;
-                stat_wait   <= wait_cnt;
-                state       <= S_TAR1;
+                lad_out <= data[7:4];
+                if (!is_io) begin
+                    stat_served <= 1'b1;
+                    stat_addr   <= req_addr;
+                    stat_data   <= data;
+                    stat_wait   <= wait_cnt;
+                end
+                state <= S_TAR1;
             end
             S_TAR1: begin                           // drive 1111, LFRAME# still low
                 lad_out <= 4'b1111;
                 state   <= S_REL;
             end
             S_REL: begin                            // second TAR clock: release all
-                if (req_addr[7:0] == 8'h74) hold <= 1'b0;
-                lad_oe    <= 1'b0;
+                if (!is_io && req_addr[7:0] == 8'h74) hold <= 1'b0;
+                lad_oe <= 1'b0;
                 lf_cyc <= 1'b0;
-                state     <= S_IDLE;
+                state  <= S_IDLE;
             end
-            default: begin                          // illegal state: release, re-hunt
-                lad_oe    <= 1'b0;
+            default: begin
+                lad_oe <= 1'b0;
                 lf_cyc <= 1'b0;
-                req       <= 1'b0;
-                state     <= S_IDLE;
+                req    <= 1'b0;
+                state  <= S_IDLE;
             end
             endcase
         end

@@ -18,7 +18,7 @@
 |---|---|---|---|
 | `clk_lpc` | `LCLK` on a global-buffer input | 33.33 MHz, stops when console off | LPC FSM, guest-facing register files (16550, Super I/O, mailbox, iotrap decode) |
 | `clk_sys` | PLL from 12 MHz oscillator | 48 MHz | Link back-end, regfile, NOR controller, flash emulation, CRC, UART PHY, USB, LED |
-| `clk_sck` | `LINK_SCK` | ≤ 40 MHz | Link shift registers |
+| `clk_sck` | `LINK_SCK` | ≤ 26.67 MHz | Link shift registers |
 
 Crossings (`rtl/common/`): toggle req/ack for LPC memory reads/writes (one outstanding, tagged so late data for an abandoned cycle is dropped); dual-clock EBR FIFOs for COM/mailbox/iotrap events; quasi-static config 2-FF synchronised; `LRESET#` synchronised into both domains; bank registers live in `clk_sys`. iotrap shadow RAM is a dual-port EBR (write: sys, read: lpc). Deferred reads use the same handshake as memory reads.
 
@@ -209,7 +209,7 @@ Implements 01-interface §3. MISO tri-stated while `LINK_CS_N` high. `IRQ_N` pus
 
 ### 9.3 MSC bulk data
 
-The SD card is on the ESP32 (00-system D8). MSC bulk data is ordinary slot traffic: the ESP32 writes 64 B packets into IN slots / reads OUT slots over the link. At 40 MHz link clock that is well above the ~1 MB/s USB FS bulk ceiling.
+The SD card is on the ESP32 (00-system D8). MSC bulk data is ordinary slot traffic: the ESP32 writes 64 B packets into IN slots / reads OUT slots over the link. At 26.67 MHz the link (~3 MB/s) is well above the ~1 MB/s USB FS bulk ceiling.
 
 ## 10. Resource estimate
 
@@ -271,6 +271,6 @@ fpga/
 | Super I/O enable sequence | COM discovery |
 | iotrap: capture order under burst, shadow reads, deferred read + timeout, FIFO full back-pressure | Legacy |
 | flash_emu: autoselect ID, program, sector/chip erase, DQ7/DQ6 polling, protected slot | Flasher compatibility |
-| Link: all spaces, NOINC, dummy/underrun, 40 MHz | Contract |
+| Link: all spaces, NOINC, dummy/underrun, 26.67 MHz | Contract |
 | USB: SETUP/IN/OUT/ZLP, NAK, STALL, toggles, bus reset, two devices at different addresses + one at 0 | SIE |
 | NOR reads at `NOR_WIDTH` 1/2/4, small- and 16 MB layouts | Boards |

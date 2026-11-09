@@ -20,7 +20,7 @@ SO/SI are named from the FPGA's SPI-master view (UP5K-SG48 pins: SCK 15, SS 16, 
 
 | Signal | Dir (ESP32 view) | Notes |
 |---|---|---|
-| `LINK_SCK`, `LINK_MOSI`, `LINK_MISO`, `LINK_CS_N` | out, out, in, out | VSPI IO_MUX pins. FPGA tri-states MISO while `LINK_CS_N` is high. Bus is dedicated to the FPGA (SD + LCD are on the ESP32's other SPI host). |
+| `LINK_SCK`, `LINK_MOSI`, `LINK_MISO`, `LINK_CS_N` | out, out, in, out | VSPI through the GPIO matrix. FPGA tri-states MISO while `LINK_CS_N` is high. Bus is dedicated to the FPGA (SD + LCD are on the ESP32's other SPI host). |
 | `FPGA_IRQ_N` | in (pull-up) | Active-low level: `(IRQ_STATUS & IRQ_ENABLE) != 0` |
 | `FPGA_CRESET_N` | out, open-drain | Low = FPGA held unconfigured, all its I/O Hi-Z with weak pull-ups |
 | `FPGA_CDONE` | in | High = configured |
@@ -49,7 +49,7 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 
 ## 3. Link protocol
 
-- SPI mode 0, MSB first, framed by `LINK_CS_N`. Phase 0 target 20 MHz; design for 26.67 MHz, stretch 40 MHz.
+- SPI mode 0, MSB first, framed by `LINK_CS_N`. 20 MHz for bring-up, 26.67 MHz maximum (the ESP32-PICO-MINI-02 routes it through the GPIO matrix).
 - FPGA shifts in the SCK domain, hands whole bytes to the 48 MHz system domain.
 
 ### 3.1 Transaction format

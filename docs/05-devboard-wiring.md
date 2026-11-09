@@ -2,7 +2,7 @@
 
 Bench setup for phases 0–1: the UPduino stands in for the FPGA side, the ESP32-PICO-DevKitM-2 (ESP32-PICO-MINI-02, 8 MB flash, 2 MB PSRAM) for the ESP32 side. Final-board pin choices are in [04-hardware.md](04-hardware.md); the signals are defined in [01-interface.md](01-interface.md).
 
-UPduino pins are given by their silkscreen label, which is the FPGA package pin number. Signals that are not FPGA user I/O (flash SPI, `CRESET_N`, `CDONE`) are on the UPduino's J3/J2 headers, listed by header pin; check the silkscreen before wiring.
+UPduino pins are given by their silkscreen label: a number is the FPGA package pin. The flash bus and FPGA control pins have function labels instead, at the ends of the two header rows (§3).
 
 ## 1. Power and ground
 
@@ -31,12 +31,14 @@ Lets the ESP32 hold the FPGA in reset and program its flash directly (01-interfa
 
 | Signal | UPduino | ESP32 devkit | Notes |
 |---|---|---|---|
-| `CFG_SCK` | J3-2 (FT_SCK, FPGA pin 15) | IO26 (J3-5) | |
-| `CFG_SS_N` | J3-1 (FT_SSn, FPGA pin 16) | IO32 (J3-6) | |
-| `CFG_MOSI` (ESP32 → flash DI) | J3-3 (FLASH_MOSI, FPGA pin 14) | IO27 (J3-8) | |
-| `CFG_MISO` (flash DO → ESP32) | J3-4 (FLASH_MISO, FPGA pin 17) | IO36 / SENSOR_VP (J3-2) | ESP32 input-only pin |
-| `FPGA_CRESET_N` | J2-3 (CRESET_N) | IO25 (J3-4) | ESP32 drives open-drain; low = FPGA held in reset |
-| `FPGA_CDONE` | J2-4 (CDONE) | IO35 (J2-12) | ESP32 input-only pin |
+| `CFG_SS_N` | **SS** | IO32 (J3-6) | |
+| `CFG_SCK` | **SCK** | IO26 (J3-5) | |
+| `CFG_MOSI` (ESP32 → flash) | **SI** | IO27 (J3-8) | Labelled from the flash's side: flash serial *in* |
+| `CFG_MISO` (flash → ESP32) | **SO** | IO36 / SENSOR_VP (J3-2) | Flash serial *out*. ESP32 input-only pin |
+| `FPGA_CRESET_N` | **RST** | IO25 (J3-4) | ESP32 drives open-drain; low = FPGA held in reset |
+| `FPGA_CDONE` | **DONE** | IO35 (J2-12) | ESP32 input-only pin |
+
+Where they are: **SS, SCK, SI, SO** are the last four pins of the UPduino's bottom header row, after `20` (FPGA pins 16, 15, 14, 17). **RST** and **DONE** are on the top row between `VIO` and `R`.
 
 ESP32 strapping pins (IO0, IO2, IO5, IO12, IO15) are not used, so an unconfigured FPGA's pull-ups can't change how the ESP32 boots.
 

@@ -9,11 +9,6 @@
 // guest's divisor is ignored.
 //
 // Write the image first:  make DESIGN=lpc_com rom ROM=<file>
-// Debug: the first 256 I/O cycles on 0x2E/0x2F, 0x2F8-0x2FF and 0x3F8-0x3FF are logged
-// (claimed or not). Sending '?' on the UART dumps the log as 512 lines "III VVVV":
-// even lines the port, odd lines {write, claimed, 6'b0, data} (data FF for an unclaimed
-// read). '?' is not passed to the guest.
-//
 // LED: blue = serving reads, green = idle, red = COM output, red blink = no 12 MHz clock.
 `default_nettype none
 
@@ -138,41 +133,16 @@ module top_lpc_com (
         .rx_valid(rx_valid), .rx_data(rx_byte), .rx_pop(rx_pop)
     );
 
-    // ------------------------------------------------------------ I/O log (debug)
-    reg  [15:0] logm [0:511];
-    reg  [8:0]  log_wp = 9'd0;
-    reg         log_full = 1'b0, log_ph = 1'b0;
-    reg  [15:0] log_w1;
-    wire        log_port = (io_addr == 16'h002E) || (io_addr == 16'h002F) ||
-                           (io_addr[15:3] == 13'h007F) || (io_addr[15:3] == 13'h005F);
-    always @(posedge lpc_clk) begin
-        log_ph <= 1'b0;
-        if (log_ph) begin
-            logm[log_wp] <= log_w1;
-            log_wp       <= log_wp + 1'b1;
-            if (log_wp == 9'd511) log_full <= 1'b1;
-        end else if (io_done && log_port && !log_full) begin
-            logm[log_wp] <= io_addr;
-            log_w1       <= {io_write, io_took, 6'd0,
-                             io_write ? io_wdata : (io_took ? io_rdata : 8'hFF)};
-            log_wp       <= log_wp + 1'b1;
-            log_ph       <= 1'b1;
-        end
-    end
-    wire [8:0]  log_ra;
-    reg  [15:0] log_rd;
-    always @(posedge clk) log_rd <= logm[log_ra];
-
     // ------------------------------------------------------------ FIFOs and UART
-    wire       utx_valid, utx_ready, dmp_busy, dmp_valid;
-    wire [7:0] utx_data, dmp_data;
+    wire       utx_valid, utx_ready;
+    wire [7:0] utx_data;
     async_fifo u_txf (
         .wclk(lpc_clk), .wr(tx_push), .wdata(tx_byte), .full(tx_full),
-        .rclk(clk), .rd(utx_valid && utx_ready && !dmp_busy), .rdata(utx_data), .rvalid(utx_valid)
+        .rclk(clk), .rd(utx_valid && utx_ready), .rdata(utx_data), .rvalid(utx_valid)
     );
     uart_tx #(.CLKS_PER_BIT(BAUD_DIV)) u_utx (
         .clk(clk), .rst(rst),
-        .data(dmp_busy ? dmp_data : utx_data), .valid(dmp_busy ? dmp_valid : utx_valid),
+        .data(utx_data), .valid(utx_valid),
         .ready(utx_ready), .tx(uart_tx)
     );
 
@@ -181,13 +151,8 @@ module top_lpc_com (
     uart_rx #(.CLKS_PER_BIT(BAUD_DIV)) u_urx (
         .clk(clk), .rst(rst), .rx(uart_rx), .data(urx_data), .valid(urx_valid)
     );
-    wire dump_key = urx_valid && urx_data == 8'h3F;     // '?'
-    trace_dump u_dump (
-        .clk(clk), .rst(rst), .go(dump_key), .oldest(9'd0), .raddr(log_ra), .rdata(log_rd),
-        .busy(dmp_busy), .tx_data(dmp_data), .tx_valid(dmp_valid), .tx_ready(utx_ready)
-    );
     async_fifo u_rxf (
-        .wclk(clk), .wr(urx_valid && !dump_key), .wdata(urx_data), .full(),
+        .wclk(clk), .wr(urx_valid), .wdata(urx_data), .full(),
         .rclk(lpc_clk), .rd(rx_pop), .rdata(rx_byte), .rvalid(rx_valid)
     );
 
@@ -201,7 +166,7 @@ module top_lpc_com (
         tog_s <= {tog_s[1:0], serve_tog};
         if (tog_s[2] ^ tog_s[1]) act <= {22{1'b1}};
         else if (act != 0)       act <= act - 1'b1;
-        if (utx_valid && utx_ready && !dmp_busy) com_act <= {22{1'b1}};
+        if (utx_valid && utx_ready) com_act <= {22{1'b1}};
         else if (com_act != 0)      com_act <= com_act - 1'b1;
     end
     reg [12:0] lf_cnt = 0;

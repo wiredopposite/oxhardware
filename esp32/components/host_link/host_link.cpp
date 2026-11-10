@@ -130,7 +130,16 @@ void RxTask(void *)
     bool overflow = false;
     uint8_t chunk[256];
     for (;;) {
-        const int n = uart_read_bytes(Port, chunk, sizeof(chunk), pdMS_TO_TICKS(100));
+        // Block for the first byte only, then take whatever else is already buffered, so
+        // a short request is handled as soon as its delimiter arrives.
+        int n = uart_read_bytes(Port, chunk, 1, portMAX_DELAY);
+        size_t avail = 0;
+        uart_get_buffered_data_len(Port, &avail);
+        if (n == 1 && avail) {
+            const int more = uart_read_bytes(Port, chunk + 1,
+                                             avail < sizeof(chunk) - 1 ? avail : sizeof(chunk) - 1, 0);
+            n += more > 0 ? more : 0;
+        }
         for (int i = 0; i < n; i++) {
             const uint8_t b = chunk[i];
             if (b == 0) {

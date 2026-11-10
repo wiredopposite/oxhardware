@@ -89,6 +89,10 @@ inline constexpr uint16_t FlashErase = 0x0205;
 inline constexpr uint16_t FlashWrite = 0x0206;
 inline constexpr uint16_t FlashCrc = 0x0207;
 inline constexpr uint16_t FlashProbe = 0x0208;
+inline constexpr uint16_t LinkRead = 0x0300;
+inline constexpr uint16_t LinkWrite = 0x0301;
+inline constexpr uint16_t LinkProbe = 0x0302;
+inline constexpr uint16_t LinkClock = 0x0303;
 }
 
 // Takes over UART0 at the console baud rate, routes ESP-IDF logging into Log frames and

@@ -49,7 +49,7 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 
 ## 3. Link protocol
 
-- SPI mode 0, MSB first, framed by `LINK_CS_N`. 20 MHz for bring-up, 26.67 MHz maximum (the ESP32-PICO-MINI-02 routes it through the GPIO matrix).
+- SPI mode 0, MSB first, framed by `LINK_CS_N`. 20 MHz maximum: the ESP32-PICO-MINI-02 routes it through the GPIO matrix, whose input delay plus the FPGA's output delay must fit in half a clock (at 26.67 MHz reads come back one bit late).
 - FPGA shifts in the SCK domain, hands whole bytes to the 48 MHz system domain.
 
 ### 3.1 Transaction format

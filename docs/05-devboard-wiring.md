@@ -15,7 +15,7 @@ All signals are 3.3 V on both sides.
 
 ## 2. ESP32 ↔ FPGA link
 
-SPI mode 0, ESP32 master. On the ESP32 the link uses the GPIO matrix (the module has no GPIO18/23 — they are wired to its in-package flash), so the link clock is limited to 26.67 MHz.
+SPI mode 0, ESP32 master. On the ESP32 the link uses the GPIO matrix (the module has no GPIO18/23 — they are wired to its in-package flash), so the link clock is limited to 20 MHz.
 
 | Signal | UPduino | ESP32 devkit | Notes |
 |---|---|---|---|

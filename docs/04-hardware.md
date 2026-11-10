@@ -25,7 +25,7 @@ Firmware-facing hardware assumptions, not a schematic. Final pin maps go in `fpg
 | Group | Signals | Count | Proposed | Constraints |
 |---|---|---|---|---|
 | Programming/console | U0TXD, U0RXD, EN, GPIO0 | 4 | 1, 3, EN, 0 | Standard DTR/RTS auto-reset |
-| Link | SCK, MOSI, MISO, LINK_CS | 4 | VSPI via GPIO matrix, non-strapping pins | Dedicated to the FPGA. The module has no GPIO16/17/18/23 (wired to its in-package flash), so the VSPI IO_MUX pins are unavailable and the link is limited to 26.67 MHz |
+| Link | SCK, MOSI, MISO, LINK_CS | 4 | VSPI via GPIO matrix, non-strapping pins | Dedicated to the FPGA. The module has no GPIO16/17/18/23 (wired to its in-package flash), so the VSPI IO_MUX pins are unavailable and the link is limited to 20 MHz |
 | SD + LCD bus | SCK, MOSI, MISO, SD_CS, LCD_CS, LCD_DC, LCD_BL | 7 | HSPI via GPIO matrix (≤ 26 MHz is fine for both) | **Not** GPIO12/15/2. SD MISO pull-up 10 kΩ |
 | FPGA control | CRESET_N, CDONE, IRQ_N | 3 | CDONE/IRQ_N on input-only 34–39 | |
 | Config bus | SCK, MOSI, MISO, SS | 4 | HSPI re-pinned via GPIO matrix (recovery only), **not** GPIO12/15/2 | Separate wires from the SD/LCD bus. An unconfigured iCE40 pulls its pins high; GPIO12 high at reset = 1.8 V flash = no boot. Burn the VDD_SDIO eFuse to 3.3 V on production boards regardless. 33 Ω series. |
@@ -109,7 +109,7 @@ Power the UPduino (USB) before the console and switch the console off first. Gro
 | B | UPduino on the LPC header, passive (`lpc_probe`, `lpc_iolog`) | Cold-boot timing (00-system §4.4); legacy register traffic (02-fpga §6.2) | Done on 1.6 |
 | C | UPduino serving from its flash (`lpc_serve`) with the LFRAME# switch | Boot a ROM on a 1.6 | Done |
 | D | + COM 16550 and Super I/O (`lpc_com`) | Devkit kernel debugger on the PC | Done (WinDbg over the UART) |
-| E | + boot config, ESP32 devkit on the link pins and config bus | ESP32 programs flash, resets FPGA, link at 20 → 26.67 MHz; bank switching (wiring: 05-devboard-wiring) | |
+| E | + boot config, ESP32 devkit on the link pins and config bus | ESP32 programs flash, resets FPGA, link at 20 MHz; bank switching (wiring: 05-devboard-wiring) | |
 | F | + controller-port pigtail | XID enumeration; composite vs. hub experiment; BT playing | |
 | G | Custom PCB v1 | Everything; 1.0–1.5 via D0; SD; LCD | |
 

@@ -12,6 +12,11 @@
     py -3 tools/oxctl.py -p COM12 fpga write FILE [--addr 0x0]  # program the FPGA's flash
     py -3 tools/oxctl.py -p COM12 fpga read OUT --addr A --len N
     py -3 tools/oxctl.py -p COM12 fpga release                  # let a held FPGA boot
+    py -3 tools/oxctl.py -p COM12 link info                     # FPGA identity over the link
+    py -3 tools/oxctl.py -p COM12 link probe                    # link wiring check
+    py -3 tools/oxctl.py -p COM12 link test [--count N] [--mhz F]         # scratch register stress
+    py -3 tools/oxctl.py -p COM12 link read ADDR [--len N] [--space S]
+    py -3 tools/oxctl.py -p COM12 link write ADDR HEXBYTES [--space S]
 
 fpga id/read/write hold the FPGA in reset (CRESET low) for the duration: the Xbox
 loses its BIOS meanwhile, and iceprog must not be running.
@@ -34,6 +39,7 @@ LOG_LEVEL = 0x0100
 FPGA_INFO, FPGA_HOLD, FPGA_RELEASE = 0x0200, 0x0201, 0x0202
 FLASH_ID, FLASH_READ, FLASH_ERASE, FLASH_WRITE, FLASH_CRC = 0x0203, 0x0204, 0x0205, 0x0206, 0x0207
 FLASH_PROBE = 0x0208
+LINK_READ, LINK_WRITE, LINK_PROBE, LINK_CLOCK = 0x0300, 0x0301, 0x0302, 0x0303
 
 LEVELS = ["none", "error", "warn", "info", "debug", "verbose"]
 RESET_REASONS = ["unknown", "power-on", "external", "software", "panic", "int-wdt",
@@ -127,6 +133,64 @@ def cmd_fpga(link, a):
         release(link)
 
 
+STS_BITS = ["NOR busy", "error", "mailbox", "iotrap", "USB", "serving", "LRESET# high", "IRQ"]
+
+
+def sts_text(sts):
+    return f"STS {sts:02X}" + "".join(f" [{n}]" for i, n in enumerate(STS_BITS) if sts >> i & 1)
+
+
+def link_read(link, addr, n, space=0):
+    r = link.request(LINK_READ, struct.pack("<BIH", space, addr, n))
+    return r[0], r[1:]
+
+
+def link_write(link, addr, data, space=0):
+    return link.request(LINK_WRITE, struct.pack("<BI", space, addr) + data)[0]
+
+
+def cmd_link(link, a):
+    if a.mhz:
+        link.request(LINK_CLOCK, struct.pack("<I", int(a.mhz * 1e6)))
+    if a.what == "info":
+        sts, r = link_read(link, 0, 0x10)
+        if r[0:4] != b"OXFG":
+            raise LinkError(f"no FPGA answering: ID {r[0:4].hex(' ').upper()} (expect 4F 58 46 47), {sts_text(sts)}")
+        _, lpc = link_read(link, 0x21, 4)
+        _, cnt = link_read(link, 0x2C, 4)
+        print(f"FPGA design {r[4]}.{r[5]}.{r[6]}  board {r[7]}  features {r[8] | r[9] << 8:04X}")
+        print(f"LRESET# {'high' if lpc[0] & 1 else 'low'}  resets {lpc[3]}  "
+              f"memory reads since reset {struct.unpack('<I', cnt)[0]}")
+        print(sts_text(sts))
+    elif a.what == "read":
+        sts, r = link_read(link, a.addr, a.len or 1, a.space)
+        for off in range(0, len(r), 16):
+            print(f"{a.addr + off:06X}  {r[off:off + 16].hex(' ').upper()}")
+        print(sts_text(sts))
+    elif a.what == "write":
+        if not a.data:
+            sys.exit("link write: data required")
+        print(sts_text(link_write(link, a.addr, bytes.fromhex(a.data), a.space)))
+    elif a.what == "probe":
+        r = link.request(LINK_PROBE)
+        lv = r[0]
+        print("MISO with CS# high, ESP32 pull-up   (expect 1):", lv & 1)
+        print("MISO with CS# high, ESP32 pull-down (expect 0):", lv >> 1 & 1)
+        print("MISO with CS# low, FPGA driving     (expect STS bit 7 = 0):", lv >> 2 & 1)
+        print(f"bit-banged STS {r[1]:02X}  ID {r[2:6].hex(' ').upper()}  (expect 4F 58 46 47)")
+    elif a.what == "test":
+        t0 = time.time()
+        for i in range(a.count):
+            v = os.urandom(4)
+            link_write(link, 0x0C, v)
+            _, r = link_read(link, 0x0C, 4)
+            if r != v:
+                raise LinkError(f"pass {i}: wrote {v.hex(' ')}, read {r.hex(' ')}")
+            if i % 20 == 0:
+                print(f"\r{i}/{a.count}", end="", flush=True)
+        print(f"\r{a.count} scratch write/read passes ok in {time.time() - t0:.1f} s")
+
+
 def cmd_log(link, a):
     level = LEVELS.index(a.level)
     link.request(LOG_LEVEL, bytes([level]) + (a.tag or "").encode())
@@ -150,6 +214,14 @@ def main():
     s.add_argument("file", nargs="?")
     s.add_argument("--addr", type=lambda x: int(x, 0), default=0)
     s.add_argument("--len", type=lambda x: int(x, 0), default=0)
+    s = sub.add_parser("link")
+    s.add_argument("what", choices=["info", "probe", "test", "read", "write"])
+    s.add_argument("addr", nargs="?", type=lambda x: int(x, 0), default=0)
+    s.add_argument("data", nargs="?")
+    s.add_argument("--len", type=lambda x: int(x, 0), default=0)
+    s.add_argument("--space", type=int, default=0)
+    s.add_argument("--count", type=int, default=200)
+    s.add_argument("--mhz", type=float, help="set the link clock first (kept until reboot)")
     s = sub.add_parser("monitor")
     s.add_argument("--reset", action="store_true", help="reset the ESP32 after opening")
     a = p.parse_args()
@@ -169,6 +241,8 @@ def main():
             if a.what in ("read", "write") and not a.file:
                 sys.exit(f"fpga {a.what}: file required")
             cmd_fpga(link, a)
+        elif a.group == "link":
+            cmd_link(link, a)
         elif a.group == "log":
             cmd_log(link, a)
         elif a.group == "monitor":

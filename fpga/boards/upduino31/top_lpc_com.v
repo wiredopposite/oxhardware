@@ -9,6 +9,7 @@
 // guest's divisor is ignored.
 //
 // Write the image first:  make DESIGN=lpc_com rom ROM=<file>
+// Link: ESP32 SPI slave, register space 0 (identity, scratch, LPC status).
 // LED: blue = serving reads, green = idle, red = COM output, red blink = no 12 MHz clock.
 `default_nettype none
 
@@ -30,7 +31,13 @@ module top_lpc_com (
     output wire       flash_csn,
     output wire       flash_sck,
     output wire       flash_mosi,
-    input  wire       flash_miso
+    input  wire       flash_miso,
+    // ESP32 link
+    input  wire       link_sck,
+    input  wire       link_cs_n,
+    input  wire       link_mosi,
+    output wire       link_miso,
+    output wire       fpga_irq_n
 );
     localparam [23:0] ROM_BASE = 24'h040000;
     localparam [23:0] ROM_MASK = 24'h03FFFF;     // 256 KB
@@ -144,15 +151,44 @@ module top_lpc_com (
         .rclk(lpc_clk), .rd(rx_pop), .rdata(rx_byte), .rvalid(rx_valid)
     );
 
-    // ------------------------------------------------------------ LED
+    // ------------------------------------------------------------ ESP32 link
     reg serve_tog = 1'b0;
     always @(posedge lpc_clk) if (st_served) serve_tog <= ~serve_tog;
 
-    reg [2:0]  tog_s;
+    reg [2:0] tog_s = 3'd0;
+    reg [1:0] lrst_s = 2'b00, inrst_s = 2'b11;
+    always @(posedge clk) begin
+        tog_s   <= {tog_s[1:0], serve_tog};
+        lrst_s  <= {lrst_s[0], lpc_reset_n};
+        inrst_s <= {inrst_s[0], tgt_in_reset};
+    end
+    wire served_pulse = tog_s[2] ^ tog_s[1];
+
+    wire        l_wr, l_rd, l_miso, l_miso_oe;
+    wire [2:0]  l_space;
+    wire [23:0] l_addr;
+    wire [7:0]  l_wdata, l_rdata, reg_rdata;
+    link_slave u_link (
+        .clk(clk), .rst(rst),
+        .sck(link_sck), .cs_n(link_cs_n), .mosi(link_mosi),
+        .miso(l_miso), .miso_oe(l_miso_oe),
+        .sts({1'b0, lrst_s[1], !inrst_s[1], 5'd0}),
+        .wr(l_wr), .rd(l_rd), .space(l_space), .addr(l_addr),
+        .wdata(l_wdata), .rdata(l_rdata)
+    );
+    assign link_miso  = l_miso_oe ? l_miso : 1'bz;
+    assign fpga_irq_n = 1'b1;
+
+    link_regs #(.BOARD_ID(8'h01), .FEATURES(16'h0047)) u_regs (
+        .clk(clk), .wr(l_wr && l_space == 3'd0), .addr(l_addr[15:0]), .wdata(l_wdata),
+        .rdata(reg_rdata), .lreset_n(lrst_s[1]), .served_pulse(served_pulse)
+    );
+    assign l_rdata = (l_space == 3'd0) ? reg_rdata : 8'h00;
+
+    // ------------------------------------------------------------ LED
     reg [21:0] act = 0, com_act = 0;
     always @(posedge clk) begin
-        tog_s <= {tog_s[1:0], serve_tog};
-        if (tog_s[2] ^ tog_s[1]) act <= {22{1'b1}};
+        if (served_pulse) act <= {22{1'b1}};
         else if (act != 0)       act <= act - 1'b1;
         if (utx_valid && utx_ready) com_act <= {22{1'b1}};
         else if (com_act != 0)      com_act <= com_act - 1'b1;

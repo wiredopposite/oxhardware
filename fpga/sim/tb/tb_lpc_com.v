@@ -14,6 +14,8 @@ module tb;
     wire       uart_tx;
     reg        uart_rx = 1'b1;
     wire       f_cs, f_sck, f_mosi, f_miso;
+    reg        l_sck = 0, l_cs = 1, l_mosi = 0;
+    wire       l_miso;
 
     // LAD: pulled up, driven by host or target. LFRAME#: host low or target pull-down.
     assign lad = host_oe ? host_lad : 4'bzzzz;
@@ -27,7 +29,9 @@ module tb;
         .uart_tx(uart_tx), .uart_rx(uart_rx),
         .lpc_clk(lclk), .lpc_reset_n(lrst_n), .lframe_gate(lframe_gate), .lpc_lad(lad),
         .v33_sense(1'b1), .lframe_sense(lframe_n),
-        .flash_csn(f_cs), .flash_sck(f_sck), .flash_mosi(f_mosi), .flash_miso(f_miso)
+        .flash_csn(f_cs), .flash_sck(f_sck), .flash_mosi(f_mosi), .flash_miso(f_miso),
+        .link_sck(l_sck), .link_cs_n(l_cs), .link_mosi(l_mosi), .link_miso(l_miso),
+        .fpga_irq_n()
     );
     spi_flash_model flash (.cs_n(f_cs), .sck(f_sck), .mosi(f_mosi), .miso(f_miso));
 
@@ -244,6 +248,42 @@ module tb;
         end
     endtask
 
+    // ESP32 link master, SPI mode 0 (26.67 MHz unless changed)
+    real LHALF = 18.75;
+    reg [7:0] lbuf [0:15];
+    reg [7:0] lsts;
+    task link_xfer(input [7:0] cmd, input [15:0] a, input integer n);   // n data bytes
+        integer k, b, tot;
+        reg [7:0] o, r;
+        begin
+            tot = 4 + (cmd[7] ? 1 : 0) + n;
+            l_cs = 0; #(LHALF);
+            for (k = 0; k < tot; k = k + 1) begin
+                o = (k == 0) ? cmd : (k == 1) ? 8'h00 : (k == 2) ? a[15:8] : (k == 3) ? a[7:0]
+                  : (!cmd[7]) ? lbuf[k - 4] : 8'h00;
+                for (b = 7; b >= 0; b = b - 1) begin
+                    l_mosi = o[b]; #(LHALF);
+                    l_sck = 1; r[b] = l_miso; #(LHALF);
+                    l_sck = 0;
+                end
+                if (k == 0) lsts = r;
+                if (cmd[7] && k >= 5) lbuf[k - 5] = r;
+            end
+            #(LHALF); l_cs = 1; #100;
+        end
+    endtask
+    task link_expect(input [7:0] cmd, input [15:0] a, input integer n, input [31:0] want);
+        integer k;
+        begin
+            link_xfer(cmd, a, n);
+            for (k = 0; k < n; k = k + 1)
+                if (lbuf[k] !== want[8*k +: 8]) begin
+                    $display("ERROR: link rd %h+%0d = %h, expected %h", a, k, lbuf[k], want[8*k +: 8]);
+                    errors = errors + 1;
+                end
+        end
+    endtask
+
     initial begin
         $readmemh("build/sim/bios.hex", bios);
         for (i = 0; i < 262144; i = i + 1) flash.mem[20'h40000 + i] = bios[i];
@@ -298,6 +338,22 @@ module tb;
         expect_rd(16'h02FD, 1, 8'h61);        // data ready
         expect_rd(16'h02F8, 1, 8'h5A);
         expect_rd(16'h02FD, 1, 8'h60);        // popped
+
+        // ESP32 link: identity, scratch, NOINC, status byte
+        link_expect(8'h80, 16'h0000, 4, "GFXO");                // 'O','X','F','G'
+        lbuf[0] = 8'h11; lbuf[1] = 8'h22; lbuf[2] = 8'h33; lbuf[3] = 8'h44;
+        link_xfer(8'h00, 16'h000C, 4);
+        link_expect(8'h80, 16'h000C, 4, 32'h44332211);
+        link_expect(8'h88, 16'h000D, 3, 32'h00222222);          // NOINC
+        if (lsts !== 8'h60) begin
+            $display("ERROR: link STS %h, expected 60", lsts); errors = errors + 1;
+        end
+        link_expect(8'h80, 16'h0021, 1, 32'h05);                 // LRESET# high, served
+        link_expect(8'h80, 16'h0007, 3, 32'h004701);             // BOARD_ID, FEATURES
+        LHALF = 2000;                                            // 250 kHz
+        link_expect(8'h80, 16'h0000, 4, "GFXO");
+        link_expect(8'h80, 16'h000C, 4, 32'h44332211);
+        LHALF = 18.75;
 
         // LRESET#: Super I/O and COM back to defaults (COM at 0x3F8)
         lrst_n = 0; #2_000; lrst_n = 1; #6_000;

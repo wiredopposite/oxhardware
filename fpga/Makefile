@@ -20,7 +20,7 @@ RTL_hello     := $(UART_RTL)
 RTL_lpc_probe := $(UART_RTL) rtl/probe/lpc_sniff.v boards/$(BOARD)/$(BOARD)_clocks.v
 RTL_lpc_iolog := $(UART_RTL) rtl/probe/lpc_sniff.v rtl/common/spram64.v boards/$(BOARD)/$(BOARD)_clocks.v
 RTL_lpc_serve := $(UART_RTL) rtl/lpc/lpc_target.v rtl/mem/spi_stream.v rtl/common/word_report.v rtl/probe/trace_buf.v rtl/common/trace_dump.v boards/$(BOARD)/$(BOARD)_clocks.v
-RTL_lpc_com   := $(UART_RTL) rtl/lpc/lpc_target.v rtl/lpc/com16550.v rtl/lpc/superio_cfg.v rtl/common/async_fifo.v rtl/mem/spi_stream.v boards/$(BOARD)/$(BOARD)_clocks.v
+RTL_lpc_com   := $(UART_RTL) rtl/lpc/lpc_target.v rtl/lpc/com16550.v rtl/lpc/superio_cfg.v rtl/common/async_fifo.v rtl/mem/spi_stream.v rtl/link/link_slave.v rtl/link/link_regs.v boards/$(BOARD)/$(BOARD)_clocks.v
 
 RTL := $(RTL_$(DESIGN)) boards/$(BOARD)/$(TOP).v
 

@@ -8,6 +8,8 @@
 | [03-esp32.md](03-esp32.md) | ESP32-PICO-MINI-02 firmware: tasks, ROM management in NOR, legacy personalities, pico_usb + FPGA DCD, SD card as MSC, Bluetooth, LEDs, LCD |
 | [04-hardware.md](04-hardware.md) | Pin budgets for both chips, power, Xbox wiring, dev-board bring-up plan, BOM sketch |
 | [05-devboard-wiring.md](05-devboard-wiring.md) | Bench wiring: UPduino v3.1 + ESP32-PICO-DevKitM-2 + Xbox |
+| [06-boot-flow.md](06-boot-flow.md) | ROM roles (Loader, System, Diag, user), one-shot armed boots, boot control port, failed-boot detection, trial updates, forced boots |
+| [07-console-protocol.md](07-console-protocol.md) | Programmer protocol: console port at 0x0B00, packets, commands, the shared `libs/oxprog` library |
 
 Status markers used throughout:
 

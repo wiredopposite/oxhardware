@@ -104,7 +104,7 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 | 0x08–0x09 | `FEATURES` | RO | bit0 LPC mem, 1 COM, 2 Super I/O, 3 mailbox, 4 USB, 5 CRC, 6 LFRAME abort, 7 iotrap, 8 flash emu, 9 reserved, 10 bank map, 11 quad NOR (0 = single/dual-SPI board, e.g. UPduino) |
 | 0x0A | `BOOT_STATUS` | RO | bit0 boot config valid, bit1 serving from boot config, bit2 config CRC bad (defaults used), bit3 woke via slave config |
 | 0x0C–0x0F | `SCRATCH` | RW | Link test |
-| 0x10–0x11 | `IRQ_STATUS` | W1C | bit0 `LRST_ASSERT`, 1 `LRST_DEASSERT`, 2 `BANK_SWAPPED`, 3 `USB`, 4 `IOTRAP` (FIFO above threshold or deferred read pending), 5 `MBX_RX`, 6 `COM_RX`, 7 `ERROR`, 8 `CRC_DONE`, 9 `NOR_DONE`, 10 `FLASHEMU` (Xbox started/finished a flash write sequence), 11 reserved |
+| 0x10–0x11 | `IRQ_STATUS` | W1C | bit0 `LRST_ASSERT`, 1 `LRST_DEASSERT`, 2 `BANK_SWAPPED`, 3 `USB`, 4 `IOTRAP` (FIFO above threshold or deferred read pending), 5 `MBX_RX`, 6 `COM_RX`, 7 `ERROR`, 8 `CRC_DONE`, 9 `NOR_DONE`, 10 `FLASHEMU` (Xbox started/finished a flash write sequence), 11 `BOOTCTL` (console armed a bank or confirmed) |
 | 0x12–0x13 | `IRQ_ENABLE` | RW | Same bits |
 | 0x14 | `ERR_STATUS` | W1C | bit0 `NOR_UNDERRUN`, 1 `FIFO_UNDERRUN`, 2 `FIFO_OVERFLOW`, 3 `LPC_SYNC_TIMEOUT`, 4 `LINK_BAD_CMD`, 5 `IOTRAP_OVERFLOW`, 6 `FLASHEMU_PROTECT` (write to protected bank refused) |
 | 0x15 | `SOFT_RESET` | SC | `0xA5`: reset all blocks except link |
@@ -113,16 +113,22 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 
 | Addr | Name | Access | Description |
 |---|---|---|---|
-| 0x20 | `LPC_CTRL` | RW | bit0 `SERVE_EN`; bit1 `D0_EN`; bit2 `LFRAME_ABORT`; bit3 `ARM_AT_RESET` (SC); bit4 `IO_EN`; bit5 `PAUSE` (mem reads short-wait until cleared/timeout); bit6 `START_FROM_LAD_ONLY` |
+| 0x20 | `LPC_CTRL` | RW | bit0 `SERVE_EN`; bit1 `D0_EN`; bit2 `LFRAME_ABORT`; bit3 `ARM_AT_RESET` (SC, one-shot: 06-boot-flow §3); bit4 `IO_EN`; bit5 `PAUSE` (mem reads short-wait until cleared/timeout); bit6 `START_FROM_LAD_ONLY` |
 | 0x21 | `LPC_STATUS` | RO | bit0 `LRESET#`; bit1 LCLK running; bit2 served ≥ 1 read since reset; bit3 swap armed |
 | 0x22 | `ACTIVE_BANK` | RW | bits 5:0 `SLOT` (256 KB units from `ROM_BASE`), bits 7:6 `SIZE` (0 = 256 K, 1 = 512 K, 2 = 1 M). Slot aligned to size. |
-| 0x23 | `PENDING_BANK` | RW | Same; applied by `ARM_AT_RESET` |
+| 0x23 | `PENDING_BANK` | RW | Same; served for one boot after `ARM_AT_RESET` |
 | 0x24 | `LPC_RESET_COUNT` | RO | Wrapping |
 | 0x25 | `LPC_TIMEOUT_COUNT` | RO | Saturating |
 | 0x26 | `SYNC_TIMEOUT` | RW | Units of 16 LCLK, default 0x80 (≈ 61 µs) |
+| 0x27 | `DEFAULT_BANK` | RW | Served after a reset with nothing armed (the Loader); from the boot config |
 | 0x28–0x2A | `LAST_MEM_ADDR` | RO | `A[23:0]` of last served read |
 | 0x2C–0x2F | `MEM_READ_COUNT` | RO | Since reset |
 | 0x30–0x37 | `PROTECT_MASK` | RW | 64-bit mask, one bit per 256 KB slot: flash emulation may not erase/program it |
+| 0x38–0x39 | `BOOTCTL_BASE` | RW | I/O base of the boot control port (06-boot-flow §4), default `0x00E0` |
+| 0x3A | `BOOT_FLAGS` | RW | 06-boot-flow §4; bits 1, 4 RO, bit3 `LAST_FAILED` RW, bit2 `TRIAL` RW |
+| 0x3B | `USER_BANK` | RW | Bank for power-button boots |
+| 0x3C | `SYSTEM_BANK` | RW | Confirmed System |
+| 0x3D | `DIAG_BANK` | RW | Diag |
 
 NOR address served = `ROM_BASE + ACTIVE_BANK.SLOT * 256 KB + (A[19:0] & size_mask)` for every memory read with `A[31:24] = 0xFF` (`ROM_BASE` from the boot config, §6).
 
@@ -187,8 +193,8 @@ Event record (SPACE 3 port 2, 4 bytes, little-endian): `port[15:0]`, `data[7:0]`
 
 | Addr | Name | Access | Description |
 |---|---|---|---|
-| 0x100 | `MBX_CTRL` | RW | bit0 enable; bit1 `RESET_REQ` (W1C) |
-| 0x101–0x102 | `MBX_BASE` | RW | I/O base of the 4-port mailbox (layout per 00-system Q5) |
+| 0x100 | `MBX_CTRL` | RW | bit0 enable; bit1 `RESET_REQ` (W1C: the console wrote `0x01` to Id, both FIFOs dropped); bit2 `READY` (ESP32: programmer up; Id reads `'R'` while clear or `RESET_REQ` set) |
+| 0x101–0x102 | `MBX_BASE` | RW | I/O base of the 4 console ports, default `0x0B00` (07-console-protocol §1) |
 | 0x103–0x104 | `MBX_RX_LEVEL` | RO | |
 | 0x105–0x106 | `MBX_TX_FREE` | RO | |
 
@@ -278,7 +284,7 @@ The boot-config address is a per-board build parameter (`BOOT_CFG_ADDR`); `ROM_B
 | 5 | 1 | Length of record in bytes |
 | 6 | 2 | Sequence number (wrapping, newer wins) |
 | 8 | 1 | `LPC_CTRL` initial value (`SERVE_EN`, `D0_EN`, `LFRAME_ABORT`, `IO_EN`) |
-| 9 | 1 | `ACTIVE_BANK` boot bank |
+| 9 | 1 | `DEFAULT_BANK` (the Loader) |
 | 10 | 8 | `PROTECT_MASK` |
 | 18 | 1 | `COM_CTRL` |
 | 19 | 2 | `COM_BASE` |
@@ -287,8 +293,12 @@ The boot-config address is a per-board build parameter (`BOOT_CFG_ADDR`); `ROM_B
 | 25 | 1 | `FE_CTRL` |
 | 26 | 1 | `LED_CTRL` |
 | 27 | 2 | `ROM_BASE` in 64 KB units (`0x0010` = 0x100000, `0x0004` = 0x040000) |
-| 29 | 1 | iotrap window count *n* (0–8) |
-| 30 | 8·*n* | iotrap window registers (§5.4 layout) |
+| 29 | 1 | `SYSTEM_BANK` |
+| 30 | 1 | `USER_BANK` |
+| 31 | 1 | `DIAG_BANK` |
+| 32 | 2 | `BOOTCTL_BASE` |
+| 34 | 1 | iotrap window count *n* (0–8) |
+| 35 | 8·*n* | iotrap window registers (§5.4 layout) |
 | … | 16 | `BANKMAP` |
 | … | 128 | Shadow RAM initial contents |
 | end − 4 | 4 | CRC-32 of all preceding bytes |

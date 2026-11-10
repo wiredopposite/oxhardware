@@ -35,7 +35,7 @@ A modchip for the original Xbox built from an **iCE40UP5K FPGA** and an **ESP32-
 | F-LEG-1 | **Generic I/O trap**: programmable LPC I/O port windows; writes captured in order into a deep FIFO for the ESP32, reads served from ESP32-maintained shadow registers (optionally deferred to the ESP32) — the basis for emulating legacy modchips (Xenium, SmartXX, X3, Aladdin… LCD / LED / bank registers) | 3 |
 | F-LEG-2 | Hardware fast-path for legacy **bank-select** writes (e.g. Xenium `0xEF`) via a bank map table, works before the ESP32 is up | 3 |
 | F-LEG-3 | **JEDEC flash-chip emulation** on LPC memory writes to the BIOS window, backed by the NOR, so existing Xbox flashers can write ROMs | 3 |
-| F-MBX-1 | LPC I/O mailbox (byte FIFOs both ways) for a native Xbox-side protocol (ROM management, ESP32 OTA) | 3 |
+| F-MBX-1 | LPC I/O mailbox (byte FIFOs both ways, 4 ports at 0x0B00) carrying the programmer protocol (07-console-protocol): ROM management, booting, updates | 1 |
 | F-USB-1 | USB 1.1 FS device: PHY, NRZI, bit-stuff, CRC5/16, auto handshake, data toggles | 2 |
 | F-USB-2 | **Multiple device addresses** on one port (hub + downstream devices, pico_usb model) and pooled endpoint buffers | 2 |
 | F-USB-3 | ESP32 services endpoints over SPI with relaxed latency; FPGA NAKs until a buffer is armed | 2 |
@@ -49,7 +49,8 @@ A modchip for the original Xbox built from an **iCE40UP5K FPGA** and an **ESP32-
 | E-FPGA-1 | Program/recover the FPGA NOR (bitstream, ROM banks, boot config) via the shared config bus while holding the FPGA in reset; slave-configure the FPGA as fallback | 0 |
 | E-ROM-1 | ROM library management in NOR: catalogue, add (PC / Xbox mailbox / flasher emulation), delete, verify, select default | 1→3 |
 | E-ROM-2 | Runtime ROM selection: boot config default, PC tool, gamepad hotkey, Xbox mailbox, legacy bank writes, LCD | 1→3 |
-| E-ROM-3 | **Loader boot**: boot config default bank = a loader ROM running on the Xbox CPU (XBlast OS / XeniumOS via the Xenium personality, or our own). It reads the boot reason from the SMC over SMBus (eject vs. power button, tray state), can check held buttons or ask the ESP32 via the mailbox, then selects a bank and either jumps to it or arms `ARM_AT_RESET` and asks the SMC to reset. The chip itself can't see the boot reason (unpowered when the button is pressed; nothing on LPC says why). | 3 |
+| E-ROM-3 | **Loader boot** (06-boot-flow): the boot default is our Loader ROM, which reads the boot reason from the SMC (eject → System, power → the user's bank), arms the target for one boot and resets through the SMC. The chip itself can't see the boot reason (unpowered when the button is pressed; nothing on LPC says why). | 1 |
+| E-ROM-4 | **Failed-boot recovery and trial updates** (06-boot-flow §6–7): the ESP32 detects a failed armed boot from LPC activity and resets back to the Loader; Loader and System updates boot once on trial and only become current after confirming | 1 |
 | E-USB-1 | USB device stack: **pico_usb** core with a new FPGA DCD; XID and MSC functions from ox; hub emulation | 2 |
 | E-BT-1 | Bluetooth gamepads via BlueRetro, mapped to `GamepadIn`/`GamepadOut` | 2 |
 | E-LEG-1 | Legacy personality layer: decodes trapped I/O traffic (e.g. HD44780 LCD writes, LED registers) and renders it to whatever is attached (SPI LCD, NeoPixels) | 3 |
@@ -159,9 +160,9 @@ Not yet measured: 1.0–1.5 boards; the FPGA's own power → `CDONE` → LPC-rea
 | Phase | Deliverable | Exit criteria |
 |---|---|---|
 | **0 – Bring-up & measure** | Repo skeletons, FPGA build for UPduino v3.1, ESP32 programs NOR + resets FPGA, FPGA self-boots, link with `ID`/scratch; cold-boot timing measurements (§4.4) | ESP32 writes a bitstream to NOR, FPGA boots it, link loopback 10⁶ transfers error-free; timing numbers recorded |
-| **1 – BIOS + COM** | NOR controller + prefetch, LPC target incl. **LFRAME# abort**, boot config, 16550 + UART + Super I/O, ESP32 ROM library in NOR + PC protocol, SMBus master, NeoPixels | 1.6 cold-boots 256 K / 512 K / 1 MB banks with no standby (then 1.0–1.5 via D0); switch at reset; kernel debug output on PC COM port |
+| **1 – BIOS + COM** | NOR controller + prefetch, LPC target incl. **LFRAME# abort**, boot config, 16550 + UART + Super I/O, mailbox + programmer protocol, ESP32 ROM library in NOR + PC protocol, SMBus master, NeoPixels | 1.6 cold-boots 256 K / 512 K / 1 MB banks with no standby (then 1.0–1.5 via D0); switch at reset; kernel debug output on PC COM port |
 | **2 – USB + BT** | Multi-address USB SIE, pico_usb FPGA DCD, XID, hub emulation, BlueRetro | BT controller plays through the test-pad port; composite vs. hub result recorded (Q2) |
-| **3 – Legacy + console-side management** | iotrap + bank map + JEDEC flash emulation, mailbox, first personality (Xenium: bank + LED + LCD), SPI LCD | An existing Xbox flasher writes a ROM into a bank; XeniumOS-style LCD/LED output appears on our LCD/NeoPixels |
+| **3 – Legacy + console-side management** | iotrap + bank map + JEDEC flash emulation, first personality (Xenium: bank + LED + LCD), SPI LCD | An existing Xbox flasher writes a ROM into a bank; XeniumOS-style LCD/LED output appears on our LCD/NeoPixels |
 | **4 – SD mass storage** | `msc_sd` on the ESP32 (`sdspi` raw blocks) behind the MSC function over the FPGA USB | Xbox reads/writes the SD card (e.g. as an MU/USB drive) and can upload ROMs from it |
 
 ## 6. Open questions
@@ -171,6 +172,5 @@ Not yet measured: 1.0–1.5 boards; the FPGA's own power → `CDONE` → LPC-rea
 | Q2 | Multi-controller on one root port: composite (4 XID interfaces, as ox's default) vs. hub emulation (Duke-like: hub + XIDs + MU). Which does the stock kernel map to players 1–4, and does it accept an MU/MSC device? | Build both (cheap in this design), decide by experiment |
 | Q3 | Which legacy chips matter first (Xenium, SmartXX, Xecuter 3, Aladdin…), and which flashers must the JEDEC emulation satisfy (Raincoat, XBlast, EvoX, XeniumOS…)? This determines the ID code(s) to report | Xenium first; report an SST49LF080A-class ID |
 | Q4 | 5 V for NeoPixels and the board without standby: controller-port VBUS or the LPC header's 5 V pin? How much current does each supply, and how much 3.3 V is available on the header? | Board powered from controller-port 5 V via its own regulator |
-| Q5 | Mailbox I/O base and protocol: reuse ox's console-port protocol so its Xbox-side tools work? | Reuse ox's |
 | Q6 | Licence | Undecided. Third-party code rules: [CREDITS.md](CREDITS.md) |
 | Q7 | If the UP5K turns out inadequate (LUTs, timing), which fallback FPGA? See 02-fpga §10.1 | Decide on real Yosys numbers; GW1N-9 (no PSRAM) or iCE40HX4K, both keeping the NOR architecture |

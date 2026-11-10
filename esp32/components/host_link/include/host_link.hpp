@@ -96,6 +96,7 @@ inline constexpr uint16_t LinkClock = 0x0303;
 inline constexpr uint16_t SmbusRead = 0x0400;
 inline constexpr uint16_t SmbusWrite = 0x0401;
 inline constexpr uint16_t SmcPower = 0x0402;
+inline constexpr uint16_t ProgXfer = 0x0500;
 }
 
 // Takes over UART0 at the console baud rate, routes ESP-IDF logging into Log frames and

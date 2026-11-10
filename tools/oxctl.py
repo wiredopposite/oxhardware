@@ -20,6 +20,9 @@
     py -3 tools/oxctl.py -p COM12 link test [--count N] [--mhz F]         # scratch register stress
     py -3 tools/oxctl.py -p COM12 link read ADDR [--len N] [--space S]
     py -3 tools/oxctl.py -p COM12 link write ADDR HEXBYTES [--space S]
+    py -3 tools/oxctl.py -p COM12 prog info                     # programmer protocol (docs/07)
+    py -3 tools/oxctl.py -p COM12 prog smbus-read ADDR REG
+    py -3 tools/oxctl.py -p COM12 prog smbus-write ADDR REG VALUE
 
 fpga id/read/write hold the FPGA in reset (CRESET low) for the duration: the Xbox
 loses its BIOS meanwhile, and iceprog must not be running.
@@ -44,6 +47,7 @@ FLASH_ID, FLASH_READ, FLASH_ERASE, FLASH_WRITE, FLASH_CRC = 0x0203, 0x0204, 0x02
 FLASH_PROBE = 0x0208
 LINK_READ, LINK_WRITE, LINK_PROBE, LINK_CLOCK = 0x0300, 0x0301, 0x0302, 0x0303
 SMBUS_READ, SMBUS_WRITE, SMC_POWER = 0x0400, 0x0401, 0x0402
+PROG_XFER = 0x0500
 SMC = 0x10
 
 LEVELS = ["none", "error", "warn", "info", "debug", "verbose"]
@@ -226,6 +230,53 @@ def cmd_xbox(link, a):
     print(f"SMC: {a.what}")
 
 
+# ---------------------------------------------------------------- programmer protocol
+PROG_MAGIC = 0x5046584F
+PROG_STATUS = ["Ok", "ConsoleOn", "ProgrammerBusy", "LayoutInvalid", "NotStarted", "BadSize",
+               "BadOffset", "BadCommand", "FlashError", "CrcMismatch", "NotFound", "Protected",
+               "NoSpace", "ConsoleOff", "SmbusError"]
+MODE_CONTROL = 1
+CTL_GET_INFO, CTL_REBOOT, CTL_SMBUS_READ, CTL_SMBUS_WRITE = 0, 1, 2, 3
+
+
+def prog(link, mode, action, payload=b""):
+    cmd = (mode & 0x0F) | (action << 4)
+    hdr = struct.pack("<IBBHI", PROG_MAGIC, cmd, 0, len(payload),
+                      zlib.crc32(payload) if payload else 0)
+    r = link.request(PROG_XFER, hdr + struct.pack("<I", zlib.crc32(hdr)) + payload)
+    magic, rcmd, status, n, pcrc, hcrc = struct.unpack_from("<IBBHII", r)
+    body = r[16:16 + n]
+    if magic != PROG_MAGIC or hcrc != zlib.crc32(r[:12]) or rcmd != cmd or len(body) != n             or (n and pcrc != zlib.crc32(body)):
+        raise LinkError("prog: malformed reply")
+    if status:
+        name = PROG_STATUS[status] if status < len(PROG_STATUS) else f"status {status}"
+        raise LinkError(f"prog: {name}")
+    return body
+
+
+def cmd_prog(link, a):
+    if a.what == "info":
+        f = struct.unpack_from("<H3B3BBBB6BBBBIII", prog(link, MODE_CONTROL, CTL_GET_INFO)
+                               .ljust(32, bytes(1)))
+        entry = lambda v: "-" if v == 0xFF else str(v)
+        print(f"protocol     {f[0]}")
+        print(f"firmware     {f[1]}.{f[2]}.{f[3]}")
+        print(f"FPGA         {f[4]}.{f[5]}.{f[6]}, board {f[7]}")
+        print(f"console      {'on' if f[8] else 'off'}, boot flags 0x{f[9]:02X}")
+        print("entries      active {} armed {} user {} loader {} system {} diag {}"
+              .format(*map(entry, f[10:16])))
+        print(f"catalogue    {f[16]} entries, {f[17]} slots, {f[18]} free")
+        print(f"flash        {f[19]} bytes, retail tables {f[20]} bytes (CRC {f[21]:08X})")
+    elif a.what == "smbus-read":
+        r = prog(link, MODE_CONTROL, CTL_SMBUS_READ, bytes([a.args[0], a.args[1], 0, 0]))
+        print(f"0x{r[2]:02X}")
+    elif a.what == "smbus-write":
+        if len(a.args) < 3:
+            sys.exit("prog smbus-write: ADDR REG VALUE")
+        prog(link, MODE_CONTROL, CTL_SMBUS_WRITE, bytes([a.args[0], a.args[1], a.args[2], 0]))
+        print("ok")
+
+
 def cmd_log(link, a):
     level = LEVELS.index(a.level)
     link.request(LOG_LEVEL, bytes([level]) + (a.tag or "").encode())
@@ -265,6 +316,9 @@ def main():
     s.add_argument("--space", type=int, default=0)
     s.add_argument("--count", type=int, default=200)
     s.add_argument("--mhz", type=float, help="set the link clock first (kept until reboot)")
+    s = sub.add_parser("prog")
+    s.add_argument("what", choices=["info", "smbus-read", "smbus-write"])
+    s.add_argument("args", nargs="*", type=lambda x: int(x, 0))
     s = sub.add_parser("monitor")
     s.add_argument("--reset", action="store_true", help="reset the ESP32 after opening")
     a = p.parse_args()
@@ -290,6 +344,10 @@ def main():
             cmd_xbox(link, a)
         elif a.group == "link":
             cmd_link(link, a)
+        elif a.group == "prog":
+            if a.what.startswith("smbus") and len(a.args) < 2:
+                sys.exit(f"prog {a.what}: ADDR REG required")
+            cmd_prog(link, a)
         elif a.group == "log":
             cmd_log(link, a)
         elif a.group == "monitor":

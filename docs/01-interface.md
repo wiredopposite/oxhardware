@@ -121,11 +121,11 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 | 0x25 | `LPC_TIMEOUT_COUNT` | RO | Saturating |
 | 0x26 | `SYNC_TIMEOUT` | RW | Units of 16 LCLK, default 0x80 (≈ 61 µs) |
 | 0x27 | `DEFAULT_BANK` | RW | Served after a reset with nothing armed (the Loader); from the boot config |
-| 0x28–0x2A | `LAST_MEM_ADDR` | RO | `A[23:0]` of last served read |
+| 0x28–0x2A | `LAST_MEM_ADDR` | RO | NOR address of the last served read |
 | 0x2C–0x2F | `MEM_READ_COUNT` | RO | Since reset |
 | 0x30–0x37 | `PROTECT_MASK` | RW | 64-bit mask, one bit per 256 KB slot: flash emulation may not erase/program it |
 | 0x38–0x39 | `BOOTCTL_BASE` | RW | I/O base of the boot control port (06-boot-flow §4), default `0x00E0` |
-| 0x3A | `BOOT_FLAGS` | RW | 06-boot-flow §4; bits 1, 4 RO, bit3 `LAST_FAILED` RW, bit2 `TRIAL` RW |
+| 0x3A | `BOOT_FLAGS` | RW | 06-boot-flow §4. Reads the flags; writes bit2 → `TRIAL_PENDING` (bit5) and bit3 → `LAST_FAILED`, other bits ignored |
 | 0x3B | `USER_BANK` | RW | Bank for power-button boots |
 | 0x3C | `SYSTEM_BANK` | RW | Confirmed System |
 | 0x3D | `DIAG_BANK` | RW | Diag |

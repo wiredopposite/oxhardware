@@ -16,6 +16,7 @@ module tb;
     wire       f_cs, f_sck, f_mosi, f_miso;
     reg        l_sck = 0, l_cs = 1, l_mosi = 0;
     wire       l_miso;
+    wire       irq_n;
 
     // LAD: pulled up, driven by host or target. LFRAME#: host low or target pull-down.
     assign lad = host_oe ? host_lad : 4'bzzzz;
@@ -31,7 +32,7 @@ module tb;
         .v33_sense(1'b1), .lframe_sense(lframe_n),
         .flash_csn(f_cs), .flash_sck(f_sck), .flash_mosi(f_mosi), .flash_miso(f_miso),
         .link_sck(l_sck), .link_cs_n(l_cs), .link_mosi(l_mosi), .link_miso(l_miso),
-        .fpga_irq_n()
+        .fpga_irq_n(irq_n)
     );
     spi_flash_model flash (.cs_n(f_cs), .sck(f_sck), .mosi(f_mosi), .miso(f_miso));
 
@@ -40,6 +41,7 @@ module tb;
     reg [7:0] bios [0:262143];
     integer i, reads = 0, errors = 0, timeouts = 0, waits_total = 0, wait_max = 0;
     integer lframe_low_seen = 0;
+    reg [7:0] exp_x = 8'h00;                  // expected = image byte ^ exp_x (bank contents)
 
     task mem_read(input [31:0] a);
         integer k, w; reg [3:0] s; reg [7:0] d; reg done;
@@ -72,9 +74,9 @@ module tb;
                 reads = reads + 1;
                 waits_total = waits_total + w;
                 if (w > wait_max) wait_max = w;
-                if (d !== bios[a[17:0]]) begin
+                if (d !== (bios[a[17:0]] ^ exp_x)) begin
                     errors = errors + 1;
-                    if (errors < 10) $display("MISMATCH at %h: got %h want %h", a, d, bios[a[17:0]]);
+                    if (errors < 10) $display("MISMATCH at %h: got %h want %h", a, d, bios[a[17:0]] ^ exp_x);
                 end
             end else begin
                 timeouts = timeouts + 1;
@@ -284,9 +286,97 @@ module tb;
         end
     endtask
 
+    // ---------------------------------------------------------------- banks
+    task lw(input [15:0] a, input [7:0] v);
+        begin lbuf[0] = v; link_xfer(8'h00, a, 1); end
+    endtask
+    task lr(input [15:0] a, input [7:0] v);
+        link_expect(8'h80, a, 1, {24'd0, v});
+    endtask
+    task console_reset;
+        begin lrst_n = 0; #2_000; lrst_n = 1; #6_000; run(32'hFF000070, 8); end
+    endtask
+    task bank_tests;
+        begin
+            // defaults
+            lr(16'h0020, 8'h15); lr(16'h0022, 8'h00); lr(16'h0027, 8'h00);
+            lr(16'h0038, 8'hE0); lr(16'h0039, 8'h00); lr(16'h003A, 8'h00);
+            expect_rd(16'h00E0, 1, 8'h4F);
+            expect_rd(16'h00E2, 1, 8'hFF);                        // nothing armed
+            expect_rd(16'h00E7, 1, 8'h00);
+            expect_rd(16'h00E8, 0, 8'h00);                        // not ours
+            lw(16'h003C, 8'h01);                                  // SYSTEM_BANK
+            expect_rd(16'h00E5, 1, 8'h01);
+
+            // the Loader arms bank 1 and resets: one boot of bank 1, then the default
+            lw(16'h0010, 8'hFF); lw(16'h0011, 8'hFF);             // clear what earlier resets raised
+            lw(16'h0012, 8'h01);                                  // IRQ: LRST_ASSERT
+            lw(16'h0013, 8'h08);                                  //      BOOTCTL
+            expect_wr(16'h00E2, 8'h01, 1);
+            expect_rd(16'h00E2, 1, 8'h01);
+            expect_rd(16'h00E1, 1, 8'h01);                        // armed
+            lr(16'h0011, 8'h08);                                  // BOOTCTL raised
+            if (irq_n !== 1'b0) begin $display("ERROR: IRQ_N not low"); errors = errors + 1; end
+            lw(16'h0011, 8'h08);                                  // W1C
+            if (irq_n !== 1'b1) begin $display("ERROR: IRQ_N not released"); errors = errors + 1; end
+            lr(16'h0021, 8'h0D);                                  // swap armed
+            exp_x = 8'h5A; console_reset;
+            lr(16'h0010, 8'h03);                                  // LRST assert + deassert
+            if (irq_n !== 1'b0) begin $display("ERROR: IRQ_N not low after reset"); errors = errors + 1; end
+            lw(16'h0010, 8'h03);
+            lr(16'h0022, 8'h01);
+            lr(16'h003A, 8'h02);                                  // ARMED_BOOT
+            expect_rd(16'h00E7, 1, 8'h01);
+            run(32'hFF000100, 20); run(32'hFF040100, 4);
+            expect_wr(16'h00E3, 8'hA5, 1);                        // confirm
+            expect_rd(16'h00E1, 1, 8'h12);
+            exp_x = 8'h00; console_reset;
+            lr(16'h0022, 8'h00); lr(16'h003A, 8'h00);
+            run(32'hFF000100, 20);
+
+            // ESP32 arms bank 1 on trial
+            lw(16'h0023, 8'h01); lw(16'h003A, 8'h04); lw(16'h0020, 8'h1D);
+            lr(16'h003A, 8'h21);                                  // armed, trial pending
+            exp_x = 8'h5A; console_reset;
+            lr(16'h003A, 8'h06);                                  // ARMED_BOOT, TRIAL
+            run(32'hFF000200, 8);
+            exp_x = 8'h00; console_reset;
+            lr(16'h003A, 8'h00);
+            run(32'hFF000200, 8);
+
+            // ESP32 disarms again before the reset
+            expect_wr(16'h00E2, 8'h02, 1); lw(16'h0020, 8'h15);
+            lr(16'h0020, 8'h15); expect_rd(16'h00E2, 1, 8'hFF);
+
+            // LAST_FAILED: set by the ESP32, cleared by the Loader
+            lw(16'h003A, 8'h08);
+            expect_rd(16'h00E1, 1, 8'h08);
+            expect_wr(16'h00E1, 8'h08, 1);
+            lr(16'h003A, 8'h00);
+
+            // 512 K bank at slot 1 (slots 1-2), switched immediately
+            lw(16'h0022, 8'h41);
+            #1_000;
+            exp_x = 8'h5A; run(32'hFF000300, 8); run(32'hFF080300, 4);
+            exp_x = 8'hA5; run(32'hFF040300, 8); run(32'hFFFC0300, 4);
+            lr(16'h002A, 8'h0C);                                  // LAST_MEM_ADDR in slot 2
+            exp_x = 8'h00; lw(16'h0022, 8'h00);
+            #1_000; run(32'hFF000300, 8);
+
+            // the port moves with BOOTCTL_BASE
+            lw(16'h0038, 8'h40); lw(16'h0039, 8'h0C);
+            expect_rd(16'h00E0, 0, 8'h00);
+            expect_rd(16'h0C40, 1, 8'h4F);
+        end
+    endtask
+
     initial begin
         $readmemh("build/sim/bios.hex", bios);
-        for (i = 0; i < 262144; i = i + 1) flash.mem[20'h40000 + i] = bios[i];
+        for (i = 0; i < 262144; i = i + 1) begin
+            flash.mem[20'h40000 + i] = bios[i];               // slot 0
+            flash.mem[20'h80000 + i] = bios[i] ^ 8'h5A;       // slot 1
+            flash.mem[20'hC0000 + i] = bios[i] ^ 8'hA5;       // slot 2
+        end
         #20_000 lrst_n = 1;
         #6_000;
         run(32'hFF000070, 8);                 // measured 1.6 boot pattern (ends the boot hold)
@@ -366,6 +456,8 @@ module tb;
         expect_rd(16'h02FD, 0, 8'h00);
         expect_rd(16'h03FD, 1, 8'h60);
         run(32'hFF000100, 20);
+
+        bank_tests;
 
         $display("reads=%0d errors=%0d timeouts=%0d max_wait=%0d uart_out=%0d",
                  reads, errors, timeouts, wait_max, ngot);

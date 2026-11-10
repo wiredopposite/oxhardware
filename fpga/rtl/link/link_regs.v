@@ -16,7 +16,8 @@ module link_regs #(
     output reg  [7:0]  rdata = 8'd0,
     // LPC status (synchronised by the caller)
     input  wire        lreset_n,
-    input  wire        served_pulse    // one clk per served memory read
+    input  wire        served_pulse,   // one clk per served memory read
+    input  wire        armed           // a bank is armed for the next reset
 );
     reg [7:0]  scratch [0:3];
     reg [7:0]  reset_count = 8'd0;
@@ -54,7 +55,7 @@ module link_regs #(
             16'h0008: rdata <= FEATURES[7:0];
             16'h0009: rdata <= FEATURES[15:8];
             16'h000C, 16'h000D, 16'h000E, 16'h000F: rdata <= scratch[addr[1:0]];
-            16'h0021: rdata <= {5'd0, served_any, 1'b0, lreset_n};
+            16'h0021: rdata <= {4'd0, armed, served_any, 1'b0, lreset_n};
             16'h0024: rdata <= reset_count;
             16'h002C: rdata <= read_count[7:0];
             16'h002D: rdata <= read_count[15:8];

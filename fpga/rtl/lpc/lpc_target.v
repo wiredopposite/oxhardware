@@ -46,7 +46,7 @@ module lpc_target #(
     input  wire        serve_en,
     input  wire        lframe_abort,
     input  wire        io_en,
-    input  wire [23:0] rom_base,          // flash address of the image
+    input  wire [23:0] rom_base,          // flash address of the image, 64 KB aligned
     input  wire [23:0] rom_mask,          // image size - 1 (e.g. 0x3FFFF for 256 KB)
     // byte source
     output reg         req,
@@ -126,6 +126,8 @@ module lpc_target #(
     assign dbg_state      = state;
     assign io_addr_nxt    = {io_addr[11:0], lad_q};
     assign io_addr_last   = (state == S_IOADDR) && (nib == 4'd1);
+    // offset into the image; rom_base is 64 KB aligned, so only its top byte is added
+    wire [19:0] win       = {addr[15:0], lad_q} & rom_mask[19:0];
 
     // States in which we are listening, not driving. Fail-safe: in any of them both
     // outputs are forced off, so a corrupted state (e.g. an LCLK glitch) can't leave us
@@ -267,7 +269,7 @@ module lpc_target #(
                     state        <= S_SKIP1;
                 end else if (nib == 4'd1) begin     // edge 11: full address known
                     req      <= 1'b1;
-                    req_addr <= rom_base | ({addr[19:0], lad_q} & rom_mask);
+                    req_addr <= {rom_base[23:16] + {4'd0, win[19:16]}, win[15:0]};
                     have     <= 1'b0;
                     is_io    <= 1'b0;
                     state    <= S_TAR;

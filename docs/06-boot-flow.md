@@ -30,7 +30,7 @@ The Loader, System and Diag run on the Xbox CPU and reach the SMC through the MC
 | `PENDING_BANK` + `ARM_AT_RESET` | Served for **one** boot: at the next `LRESET#` assertion it becomes `ACTIVE_BANK` and the arm clears. |
 | `ACTIVE_BANK` | What is being served now. |
 
-At every `LRESET#` assertion: if armed, `ACTIVE_BANK ← PENDING_BANK` and `BOOT_FLAGS.ARMED_BOOT` is set; otherwise `ACTIVE_BANK ← DEFAULT_BANK` and `ARMED_BOOT` clears. A bank that crashes, FRAGs or reboots therefore never runs twice by accident: the reset after it lands on the Loader.
+At every `LRESET#` assertion: if armed, `ACTIVE_BANK ← PENDING_BANK`, `ARMED_BOOT` is set and `TRIAL ← TRIAL_PENDING`; otherwise `ACTIVE_BANK ← DEFAULT_BANK` and both clear. The arm, `TRIAL_PENDING` and `CONFIRMED` clear either way. A bank that crashes, FRAGs or reboots therefore never runs twice by accident: the reset after it lands on the Loader.
 
 The console arms through the boot control port (§4); the ESP32 through the link registers. Both set the same `PENDING_BANK`.
 
@@ -41,15 +41,15 @@ What the Loader uses: eight LPC I/O ports at `BOOTCTL_BASE` (default `0x00E0`, f
 | Port | Read | Write |
 |---|---|---|
 | +0 | `0x4F` signature | — |
-| +1 | `BOOT_FLAGS` (below) | 1 to clear `LAST_FAILED` |
-| +2 | Armed target (`0xFF` = none) | Arm this bank for the next reset |
+| +1 | `BOOT_FLAGS` (below) | Bit 3 set: clear `LAST_FAILED` |
+| +2 | Armed target (`0xFF` = none) | Arm this bank for the next reset (`0xFF` disarms) |
 | +3 | — | `0xA5`: confirm this boot (a trial Loader, §7) |
 | +4 | `USER_BANK`: bank for power-button boots | — |
 | +5 | `SYSTEM_BANK`: confirmed System | — |
 | +6 | `DIAG_BANK` | — |
 | +7 | `ACTIVE_BANK` | — |
 
-`BOOT_FLAGS`: bit0 a bank is armed; bit1 `ARMED_BOOT` (this boot was armed); bit2 `TRIAL` (this boot must confirm); bit3 `LAST_FAILED` (the previous armed boot failed, set by the ESP32); bit4 `CONFIRMED` (this boot has confirmed).
+`BOOT_FLAGS`: bit0 a bank is armed; bit1 `ARMED_BOOT` (this boot was armed); bit2 `TRIAL` (this boot must confirm); bit3 `LAST_FAILED` (the previous armed boot failed, set by the ESP32); bit4 `CONFIRMED` (this boot has confirmed); bit5 `TRIAL_PENDING` (the armed boot will be a trial).
 
 Every value the Loader needs comes from the boot config record, so the Loader works before the ESP32 has started, or without one. System and other console software use the programmer protocol (07-console-protocol) instead, which goes through the ESP32: ROM library, choosing the power-button ROM, booting an entry, confirming, updates.
 

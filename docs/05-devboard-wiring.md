@@ -42,7 +42,7 @@ Where they are: **SS, SCK, SI, SO** are the last four pins of the UPduino's bott
 
 ESP32 strapping pins (IO0, IO2, IO5, IO12, IO15) are not used, so an unconfigured FPGA's pull-ups can't change how the ESP32 boots.
 
-## 4. Xbox and debug (unchanged)
+## 4. Xbox and debug
 
 | Signal | UPduino | Notes |
 |---|---|---|
@@ -55,8 +55,13 @@ ESP32 strapping pins (IO0, IO2, IO5, IO12, IO15) are not used, so an unconfigure
 | COM UART TX / RX | 2 / 46 | Debug Probe (kernel debugger) |
 | ESP32 UART0 | devkit USB | `oxctl`, 921600 |
 
+| Signal | Xbox LPC header | ESP32 devkit | Notes |
+|---|---|---|---|
+| SMBus SDA | 14 | IO33 (J3-7) | Console pull-ups only |
+| SMBus SCL | 13 | IO13 (J3-11) | |
+
 ## 5. Pins in use
 
 **UPduino**: 2, 4, 14–17 (flash), 20 (12 MHz), 23, 25, 26, 27, 31, 32, 34, 36, 37, 38, 39–41 (LED), 42, 43, 44, 45, 46, 47, 48. Pin 35 is unusable while the PLL runs. Free: 3, 6, 9, 10, 11, 12, 13, 18, 19, 21, 28.
 
-**ESP32 devkit**: IO1/IO3 (USB UART), 19, 20, 21, 22, 25, 26, 27, 32, 34, 35, 36. Free: 4, 7, 8, 13, 14, 33, 37, 38, 39 (and strapping pins 0, 2, 5, 12, 15 with care).
+**ESP32 devkit**: IO1/IO3 (USB UART), 13, 19, 20, 21, 22, 25, 26, 27, 32, 33, 34, 35, 36. Free: 4, 7, 8, 14, 37, 38, 39 (and strapping pins 0, 2, 5, 12, 15 with care).

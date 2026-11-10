@@ -18,7 +18,7 @@ enum class Space : uint8_t {
 inline constexpr size_t MaxXfer = 4096;
 
 void Init();
-// Link SCK frequency (20 MHz default and maximum: GPIO-matrix input delay).
+// Link SCK frequency (default 10 MHz; 20 MHz maximum, GPIO-matrix input delay).
 void SetClock(int hz);
 
 // Reads len (<= MaxXfer) bytes from space:addr. noinc reads the same address repeatedly.

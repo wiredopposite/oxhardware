@@ -33,8 +33,12 @@ constexpr uint8_t StatusBusy = 0x01;
 
 spi_device_handle_t Dev;
 bool IsHeld = false;
-DMA_ATTR uint8_t TxBuf[MaxXfer];
-DMA_ATTR uint8_t RxBuf[MaxXfer];
+// CPU transfers only (no DMA): freeing a DMA-enabled bus on release disturbs the link's
+// DMA channel. The hardware buffer holds 64 bytes, so longer transfers are chunked with
+// CS# held low.
+constexpr size_t Chunk = 64;
+uint8_t TxBuf[MaxXfer];
+uint8_t RxBuf[MaxXfer];
 
 void PinsFloat()
 {
@@ -54,12 +58,16 @@ void Select(bool on)
 // One CS-framed transfer: tx_len bytes from TxBuf, total bytes clocked = len.
 bool Xfer(size_t len)
 {
-    spi_transaction_t t = {};
-    t.length = len * 8;
-    t.tx_buffer = TxBuf;
-    t.rx_buffer = RxBuf;
     Select(true);
-    const esp_err_t err = spi_device_polling_transmit(Dev, &t);
+    esp_err_t err = ESP_OK;
+    for (size_t off = 0; off < len && err == ESP_OK; off += Chunk) {
+        spi_transaction_t t = {};
+        const size_t n = len - off < Chunk ? len - off : Chunk;
+        t.length = n * 8;
+        t.tx_buffer = TxBuf + off;
+        t.rx_buffer = RxBuf + off;
+        err = spi_device_polling_transmit(Dev, &t);
+    }
     Select(false);
     return err == ESP_OK;
 }
@@ -150,8 +158,8 @@ bool Hold()
     bus.sclk_io_num = Pins::CfgSck;
     bus.quadwp_io_num = -1;
     bus.quadhd_io_num = -1;
-    bus.max_transfer_sz = MaxXfer;
-    if (spi_bus_initialize(Host, &bus, SPI_DMA_CH_AUTO) != ESP_OK) {
+    bus.max_transfer_sz = Chunk;
+    if (spi_bus_initialize(Host, &bus, SPI_DMA_DISABLED) != ESP_OK) {
         ESP_LOGE(Tag, "spi_bus_initialize failed");
         gpio_set_level(Pins::FpgaCreset, 1);
         PinsFloat();

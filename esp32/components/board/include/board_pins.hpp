@@ -22,4 +22,8 @@ inline constexpr gpio_num_t CfgMiso = GPIO_NUM_36;
 inline constexpr gpio_num_t FpgaCreset = GPIO_NUM_25;
 inline constexpr gpio_num_t FpgaCdone = GPIO_NUM_35;
 
+// Xbox SMBus (console pull-ups)
+inline constexpr gpio_num_t SmbSda = GPIO_NUM_33;
+inline constexpr gpio_num_t SmbScl = GPIO_NUM_13;
+
 }

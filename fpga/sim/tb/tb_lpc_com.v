@@ -355,6 +355,11 @@ module tb;
         link_expect(8'h80, 16'h000C, 4, 32'h44332211);
         LHALF = 18.75;
 
+        // A 300 ns LRESET# glitch is filtered: COM stays where the guest put it
+        lrst_n = 0; #300; lrst_n = 1; #3_000;
+        expect_rd(16'h02FD, 1, 8'h60);
+        run(32'hFF000200, 8);
+
         // LRESET#: Super I/O and COM back to defaults (COM at 0x3F8)
         lrst_n = 0; #2_000; lrst_n = 1; #6_000;
         run(32'hFF000070, 8);

@@ -17,7 +17,7 @@ namespace {
 const char *Tag = "fpga_link";
 
 constexpr spi_host_device_t Host = SPI3_HOST;
-int ClockHz = 20 * 1000 * 1000;
+int ClockHz = 10 * 1000 * 1000;
 constexpr size_t Header = 4;            // CMD + 3 address bytes
 constexpr size_t MaxDummy = 4;
 constexpr size_t BufSize = Header + MaxDummy + MaxXfer;

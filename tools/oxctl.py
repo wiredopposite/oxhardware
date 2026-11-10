@@ -12,6 +12,9 @@
     py -3 tools/oxctl.py -p COM12 fpga write FILE [--addr 0x0]  # program the FPGA's flash
     py -3 tools/oxctl.py -p COM12 fpga read OUT --addr A --len N
     py -3 tools/oxctl.py -p COM12 fpga release                  # let a held FPGA boot
+    py -3 tools/oxctl.py -p COM12 smbus read ADDR REG [--word]
+    py -3 tools/oxctl.py -p COM12 smbus write ADDR REG VALUE [--word]
+    py -3 tools/oxctl.py -p COM12 xbox status|reset|cycle|off  # through the SMC
     py -3 tools/oxctl.py -p COM12 link info                     # FPGA identity over the link
     py -3 tools/oxctl.py -p COM12 link probe                    # link wiring check
     py -3 tools/oxctl.py -p COM12 link test [--count N] [--mhz F]         # scratch register stress
@@ -40,6 +43,8 @@ FPGA_INFO, FPGA_HOLD, FPGA_RELEASE = 0x0200, 0x0201, 0x0202
 FLASH_ID, FLASH_READ, FLASH_ERASE, FLASH_WRITE, FLASH_CRC = 0x0203, 0x0204, 0x0205, 0x0206, 0x0207
 FLASH_PROBE = 0x0208
 LINK_READ, LINK_WRITE, LINK_PROBE, LINK_CLOCK = 0x0300, 0x0301, 0x0302, 0x0303
+SMBUS_READ, SMBUS_WRITE, SMC_POWER = 0x0400, 0x0401, 0x0402
+SMC = 0x10
 
 LEVELS = ["none", "error", "warn", "info", "debug", "verbose"]
 RESET_REASONS = ["unknown", "power-on", "external", "software", "panic", "int-wdt",
@@ -191,6 +196,36 @@ def cmd_link(link, a):
         print(f"\r{a.count} scratch write/read passes ok in {time.time() - t0:.1f} s")
 
 
+def smb_read(link, addr, reg, width=1):
+    r = link.request(SMBUS_READ, bytes([addr, reg, width]))
+    return r[0] if width == 1 else struct.unpack("<H", r)[0]
+
+
+def cmd_smbus(link, a):
+    width = 2 if a.word else 1
+    if a.what == "read":
+        print(f"0x{smb_read(link, a.addr, a.reg, width):0{width * 2}X}")
+    else:
+        if a.value is None:
+            sys.exit("smbus write: value required")
+        link.request(SMBUS_WRITE, bytes([a.addr, a.reg, width])
+                     + a.value.to_bytes(width, "little"))
+        print("ok")
+
+
+def cmd_xbox(link, a):
+    if a.what == "status":
+        for name, reg in [("tray state", 0x03), ("AV pack", 0x04), ("CPU temp", 0x09),
+                          ("board temp", 0x0A)]:
+            try:
+                print(f"{name:11} 0x{smb_read(link, SMC, reg):02X}")
+            except LinkError as e:
+                print(f"{name:11} {e}")
+        return
+    link.request(SMC_POWER, bytes([{"reset": 0x01, "cycle": 0x40, "off": 0x80}[a.what]]))
+    print(f"SMC: {a.what}")
+
+
 def cmd_log(link, a):
     level = LEVELS.index(a.level)
     link.request(LOG_LEVEL, bytes([level]) + (a.tag or "").encode())
@@ -214,6 +249,14 @@ def main():
     s.add_argument("file", nargs="?")
     s.add_argument("--addr", type=lambda x: int(x, 0), default=0)
     s.add_argument("--len", type=lambda x: int(x, 0), default=0)
+    s = sub.add_parser("smbus")
+    s.add_argument("what", choices=["read", "write"])
+    s.add_argument("addr", type=lambda x: int(x, 0))
+    s.add_argument("reg", type=lambda x: int(x, 0))
+    s.add_argument("value", nargs="?", type=lambda x: int(x, 0))
+    s.add_argument("--word", action="store_true")
+    s = sub.add_parser("xbox")
+    s.add_argument("what", choices=["status", "reset", "cycle", "off"])
     s = sub.add_parser("link")
     s.add_argument("what", choices=["info", "probe", "test", "read", "write"])
     s.add_argument("addr", nargs="?", type=lambda x: int(x, 0), default=0)
@@ -241,6 +284,10 @@ def main():
             if a.what in ("read", "write") and not a.file:
                 sys.exit(f"fpga {a.what}: file required")
             cmd_fpga(link, a)
+        elif a.group == "smbus":
+            cmd_smbus(link, a)
+        elif a.group == "xbox":
+            cmd_xbox(link, a)
         elif a.group == "link":
             cmd_link(link, a)
         elif a.group == "log":

@@ -48,6 +48,10 @@ module top_lpc_com (
         .clk12(clk12), .clk_sys(clk), .pll_locked(pll_locked), .rst(rst), .clk_lf(clk_lf)
     );
 
+    // LRESET# through a glitch filter (system clock): everything below uses lreset_n
+    wire lreset_n;
+    lreset_filter u_lrf (.clk(clk), .lreset_n_pin(lpc_reset_n), .lreset_n(lreset_n));
+
     // ------------------------------------------------------------ LCLK domain: LPC target
     wire [3:0]  lad_out;
     wire        lad_oe, lframe_oe, holding;
@@ -64,7 +68,7 @@ module top_lpc_com (
     assign lframe_gate = {4{lframe_oe}};
 
     lpc_target u_tgt (
-        .lclk(lpc_clk), .lreset_n(lpc_reset_n), .lframe_n(lframe_sense), .lad_in(lpc_lad),
+        .lclk(lpc_clk), .lreset_n(lreset_n), .lframe_n(lframe_sense), .lad_in(lpc_lad),
         .lad_out(lad_out), .lad_oe(lad_oe), .lframe_oe(lframe_oe),
         .serve_en(1'b1), .lframe_abort(1'b1), .io_en(1'b1),
         .rom_base(ROM_BASE), .rom_mask(ROM_MASK),
@@ -159,7 +163,7 @@ module top_lpc_com (
     reg [1:0] lrst_s = 2'b00, inrst_s = 2'b11;
     always @(posedge clk) begin
         tog_s   <= {tog_s[1:0], serve_tog};
-        lrst_s  <= {lrst_s[0], lpc_reset_n};
+        lrst_s  <= {lrst_s[0], lreset_n};
         inrst_s <= {inrst_s[0], tgt_in_reset};
     end
     wire served_pulse = tog_s[2] ^ tog_s[1];

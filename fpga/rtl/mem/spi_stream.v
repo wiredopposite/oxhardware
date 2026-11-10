@@ -12,8 +12,12 @@
 // At power-up (and whenever 'rst' is asserted) it sends Release-Power-Down (0xAB) first:
 // the iCE40 may leave the flash in deep power-down after configuration.
 //
+// MISO is sampled on the clock that ends SCK's high phase, not the one that starts it: the
+// flash's data then has two clocks (60 ns) from the falling edge instead of one, so the
+// read works whatever the placement of the pad-to-register paths.
+//
 // Costs at SCK = 16.7 MHz: restart ~41 SCK (~2.5 us) to the first byte, then one byte per
-// 8 SCK (~0.5 us).
+// 8 SCK plus one clock (~0.5 us).
 `default_nettype none
 
 module spi_stream (
@@ -40,6 +44,7 @@ module spi_stream (
     reg [7:0]  rx;
     reg [2:0]  rxbits;
     reg        phase;              // 0: SCK low (set MOSI), 1: SCK high
+    reg        pend;               // S_DATA: a rising edge has clocked a bit not yet sampled
     reg [7:0]  gap;
     reg [23:0] next_addr;          // address of the byte currently being shifted in
 
@@ -67,8 +72,8 @@ module spi_stream (
     wire do_restart = do_req && !hit0 && !in_reach && can_rst;
     wire pop        = do_hit || (do_skip && v0);
 
-    // byte completes on this clock (falling SCK after the 8th bit)
-    wire        byte_done = (state == S_DATA) && phase && (rxbits == 3'd7);
+    // byte completes on this clock (end of SCK high after the 8th bit)
+    wire        byte_done = (state == S_DATA) && !phase && pend && (rxbits == 3'd7);
     wire [7:0]  byte_val  = {rx[6:0], spi_miso};
 
     always @(posedge clk) begin
@@ -80,6 +85,7 @@ module spi_stream (
             spi_cs_n <= 1'b1;
             spi_sck  <= 1'b0;
             phase    <= 1'b0;
+            pend     <= 1'b0;
             v0 <= 1'b0; v1 <= 1'b0;
             gap      <= 8'd4;
             tx       <= {8'hAB, 24'd0};
@@ -101,6 +107,7 @@ module spi_stream (
                     spi_cs_n  <= 1'b1;
                     spi_sck   <= 1'b0;
                     phase     <= 1'b0;
+                    pend      <= 1'b0;
                     v0 <= 1'b0; v1 <= 1'b0;
                     tx        <= {8'h03, req_addr};
                     nbits     <= 6'd32;
@@ -132,6 +139,7 @@ module spi_stream (
                             end else begin
                                 state  <= S_DATA;
                                 rxbits <= 3'd0;
+                                pend   <= 1'b0;
                             end
                         end
                     end
@@ -158,18 +166,17 @@ module spi_stream (
             S_DATA: begin
                 if (!do_restart) begin
                     // SCK is high after the last address bit and between bytes. Falling
-                    // edge: the flash shifts the next bit out. One clock (30 ns) later the
-                    // rising edge, where MISO is sampled. A full buffer stalls with SCK high.
+                    // edge: the flash shifts the next bit out; one clock later SCK rises;
+                    // the bit is sampled on the clock after that (pend), together with
+                    // the next falling edge. A completed byte takes that clock on its own,
+                    // so the full check below sees the pushed entry; a full buffer stalls
+                    // with SCK high.
                     if (!phase) begin
-                        if (!full || pop) begin
-                            spi_sck <= 1'b0;
-                            phase   <= 1'b1;
+                        if (pend) begin
+                            pend   <= 1'b0;
+                            rx     <= {rx[6:0], spi_miso};
+                            rxbits <= rxbits + 1'b1;
                         end
-                    end else begin
-                        spi_sck <= 1'b1;
-                        phase   <= 1'b0;
-                        rx      <= {rx[6:0], spi_miso};
-                        rxbits  <= rxbits + 1'b1;
                         if (byte_done) begin
                             next_addr <= next_addr + 1'b1;
                             // push; account for a pop in the same clock (requester above)
@@ -182,7 +189,14 @@ module spi_stream (
                             end else begin
                                 a1 <= next_addr; d1 <= byte_val; v1 <= 1'b1;
                             end
+                        end else if (!full || pop) begin
+                            spi_sck <= 1'b0;
+                            phase   <= 1'b1;
                         end
+                    end else begin
+                        spi_sck <= 1'b1;
+                        phase   <= 1'b0;
+                        pend    <= 1'b1;
                     end
                 end
             end

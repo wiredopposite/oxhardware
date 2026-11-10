@@ -252,7 +252,7 @@ module tb;
 
     // ESP32 link master, SPI mode 0 (26.67 MHz unless changed)
     real LHALF = 18.75;
-    reg [7:0] lbuf [0:15];
+    reg [7:0] lbuf [0:63];
     reg [7:0] lsts;
     task link_xfer(input [7:0] cmd, input [15:0] a, input integer n);   // n data bytes
         integer k, b, tot;
@@ -296,6 +296,112 @@ module tb;
     task console_reset;
         begin lrst_n = 0; #2_000; lrst_n = 1; #6_000; run(32'hFF000070, 8); end
     endtask
+    // ---------------------------------------------------------------- mailbox
+    // SPACE 3 port 1 with NOINC: 0x38 write, 0xB8 read
+    task mbx_push(input integer n);             // ESP32 -> console, lbuf[0..n-1]
+        link_xfer(8'h38, 16'h0001, n);
+    endtask
+    task mbx_pull(input integer n, input [63:0] want);   // console -> ESP32
+        integer k;
+        begin
+            link_xfer(8'hB8, 16'h0001, n);
+            for (k = 0; k < n; k = k + 1)
+                if (lbuf[k] !== want[8*k +: 8]) begin
+                    $display("ERROR: mailbox pull +%0d = %h, expected %h", k, lbuf[k], want[8*k +: 8]);
+                    errors = errors + 1;
+                end
+        end
+    endtask
+    task mbx_tests;
+        integer k;
+        begin
+            // Programmer not up: chip present, Id 'R', counts 0
+            lr(16'h0100, 8'h01);
+            expect_rd(16'h0B03, 1, "R");
+            expect_rd(16'h0B01, 1, 8'h00);
+            expect_rd(16'h0B02, 1, 8'h00);
+            expect_rd(16'h0B04, 0, 8'h00);
+            expect_wr(16'h0B00, 8'h99, 1);              // dropped while not ready
+            lr(16'h0103, 8'h00);
+
+            lw(16'h0100, 8'h05);                        // enable | READY
+            expect_rd(16'h0B03, 1, "O");
+            expect_rd(16'h0B02, 1, 8'h7F);
+            expect_rd(16'h0B01, 1, 8'h00);
+
+            // Console -> ESP32: five bytes, IRQ MBX_RX and STS bit 2
+            lw(16'h0010, 8'hFF); lw(16'h0011, 8'hFF);
+            for (k = 0; k < 5; k = k + 1) expect_wr(16'h0B00, 8'hC0 + k, 1);
+            #500;
+            lr(16'h0103, 8'h05);
+            if (lsts[2] !== 1'b1) begin $display("ERROR: STS %h: no mailbox bit", lsts); errors = errors + 1; end
+            lr(16'h0010, 8'h20);
+            mbx_pull(2, 64'hC1C0);                      // the link fetches ahead: nothing lost
+            lr(16'h0103, 8'h03);
+            mbx_pull(3, 64'hC4C3C2);
+            lr(16'h0103, 8'h00);
+            mbx_pull(2, 64'h0000);                      // empty
+            expect_wr(16'h0B00, 8'h7E, 1);
+            #500;
+            mbx_pull(1, 64'h7E);
+            lr(16'h0103, 8'h00);
+            expect_rd(16'h0B02, 1, 8'h7F);
+            LHALF = 2000;                               // 250 kHz link
+            for (k = 0; k < 3; k = k + 1) expect_wr(16'h0B00, 8'h30 + k, 1);
+            mbx_pull(2, 64'h3130);
+            mbx_pull(1, 64'h32);
+            LHALF = 18.75;
+            lr(16'h0103, 8'h00);
+
+            // ESP32 -> console
+            for (k = 0; k < 4; k = k + 1) lbuf[k] = 8'hA0 + k;
+            mbx_push(4);
+            link_expect(8'h80, 16'h0105, 2, 32'h01FC);  // TX_FREE 508
+            #500;
+            expect_rd(16'h0B01, 1, 8'h04);
+            for (k = 0; k < 4; k = k + 1) expect_rd(16'h0B00, 1, 8'hA0 + k);
+            expect_rd(16'h0B01, 1, 8'h00);
+            expect_rd(16'h0B00, 1, 8'h00);              // empty reads 0, takes nothing
+            lbuf[0] = 8'h55; mbx_push(1); #500;
+            expect_rd(16'h0B00, 1, 8'h55);
+            link_expect(8'h80, 16'h0105, 2, 32'h0200);
+
+            // Counts saturate at 0x7F
+            for (k = 0; k < 50; k = k + 1) lbuf[k] = k;
+            mbx_push(50); mbx_push(50); mbx_push(50);
+            #500;
+            expect_rd(16'h0B01, 1, 8'h7F);
+
+            // Console reset: both FIFOs dropped, 'R' until the ESP32 clears RESET_REQ
+            expect_wr(16'h0B00, 8'h11, 1);
+            expect_wr(16'h0B03, 8'h01, 1);
+            expect_rd(16'h0B03, 1, "R");
+            expect_rd(16'h0B01, 1, 8'h00);
+            lr(16'h0100, 8'h07);
+            lr(16'h0103, 8'h00);
+            lbuf[0] = 8'hEE; mbx_push(1);               // stale reply bytes from before
+            lw(16'h0100, 8'h07);                        // clear RESET_REQ (W1C)
+            #500;
+            lr(16'h0100, 8'h05);
+            expect_rd(16'h0B03, 1, "O");
+            expect_rd(16'h0B01, 1, 8'h00);
+            link_expect(8'h80, 16'h0105, 2, 32'h0200);
+            expect_wr(16'h0B00, 8'h22, 1); #500;
+            mbx_pull(1, 64'h22);
+
+            // Moving the ports, disabling them
+            lw(16'h0101, 8'h00); lw(16'h0102, 8'h0D);
+            expect_rd(16'h0B03, 0, 8'h00);
+            expect_rd(16'h0D03, 1, "O");
+            lw(16'h0101, 8'h00); lw(16'h0102, 8'h0B);
+            lw(16'h0100, 8'h04);
+            expect_rd(16'h0B03, 0, 8'h00);
+            lw(16'h0100, 8'h05);
+            expect_rd(16'h0B03, 1, "O");
+            run(32'hFF000300, 8);
+        end
+    endtask
+
     task bank_tests;
         begin
             // defaults
@@ -439,7 +545,7 @@ module tb;
             $display("ERROR: link STS %h, expected 60", lsts); errors = errors + 1;
         end
         link_expect(8'h80, 16'h0021, 1, 32'h05);                 // LRESET# high, served
-        link_expect(8'h80, 16'h0007, 3, 32'h004701);             // BOARD_ID, FEATURES
+        link_expect(8'h80, 16'h0007, 3, 32'h004F01);             // BOARD_ID, FEATURES
         LHALF = 2000;                                            // 250 kHz
         link_expect(8'h80, 16'h0000, 4, "GFXO");
         link_expect(8'h80, 16'h000C, 4, 32'h44332211);
@@ -458,6 +564,7 @@ module tb;
         run(32'hFF000100, 20);
 
         bank_tests;
+        mbx_tests;
 
         $display("reads=%0d errors=%0d timeouts=%0d max_wait=%0d uart_out=%0d",
                  reads, errors, timeouts, wait_max, ngot);

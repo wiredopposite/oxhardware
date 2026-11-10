@@ -193,10 +193,12 @@ Event record (SPACE 3 port 2, 4 bytes, little-endian): `port[15:0]`, `data[7:0]`
 
 | Addr | Name | Access | Description |
 |---|---|---|---|
-| 0x100 | `MBX_CTRL` | RW | bit0 enable; bit1 `RESET_REQ` (W1C: the console wrote `0x01` to Id, both FIFOs dropped); bit2 `READY` (ESP32: programmer up; Id reads `'R'` while clear or `RESET_REQ` set) |
+| 0x100 | `MBX_CTRL` | RW | bit0 enable (default 1: the ports are claimed); bit1 `RESET_REQ` (the console wrote `0x01` to Id and both FIFOs were dropped; write 1 to clear, which drops them again); bit2 `READY` (ESP32: programmer up; Id reads `'R'` while clear or `RESET_REQ` set) |
 | 0x101–0x102 | `MBX_BASE` | RW | I/O base of the 4 console ports, default `0x0B00` (07-console-protocol §1) |
-| 0x103–0x104 | `MBX_RX_LEVEL` | RO | |
-| 0x105–0x106 | `MBX_TX_FREE` | RO | |
+| 0x103–0x104 | `MBX_RX_LEVEL` | RO | Bytes from the console waiting (0–512) |
+| 0x105–0x106 | `MBX_TX_FREE` | RO | Room for bytes to the console (0–512) |
+
+The FIFOs are 512 bytes each way, through SPACE 3 port 1 with `NOINC`: a write queues bytes for the console (dropped when full, so check `MBX_TX_FREE`), a read takes bytes from it (`0x00` once empty). The link fetches read data ahead of what it sends; only bytes actually clocked out are taken, so a read of any length loses nothing. `MBX_RX` (`IRQ_STATUS` bit5) is raised when data arrives in an empty FIFO or `RESET_REQ` is set; STS bit2 is high while either holds. Clearing `RESET_REQ` also drops anything queued for the console before the reset.
 
 ### 5.7 LED — `0x0110`
 

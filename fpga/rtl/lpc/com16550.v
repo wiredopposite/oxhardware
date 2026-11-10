@@ -5,6 +5,8 @@
 // sender waits instead of losing bytes. No interrupts (IIR always "none pending").
 //
 // Bytes written to THR go to tx_*; RBR reads the head of the RX FIFO (rx_*), popping it.
+// Read data is registered when the caller decodes the address (sample, with the register
+// it will read), and RBR pops only if that snapshot held a byte.
 // Reset (in_reset) restores register defaults and drains the RX FIFO; the TX FIFO keeps
 // draining to the UART so the last output before a reboot isn't lost.
 `default_nettype none
@@ -14,10 +16,12 @@ module com16550 (
     input  wire       in_reset,
     // register access (decoded by the caller)
     input  wire [2:0] reg_a,
+    input  wire       sample,             // register rdata for sample_a now
+    input  wire [2:0] sample_a,
     input  wire       rd,
     input  wire       wr,
     input  wire [7:0] wdata,
-    output reg  [7:0] rdata,
+    output reg  [7:0] rdata = 8'h00,
     // TX FIFO (guest -> UART)
     output reg        tx_push,
     output reg  [7:0] tx_data,
@@ -34,16 +38,18 @@ module com16550 (
     reg       flush = 1'b0;               // draining RX (reset or FCR bit 1)
     wire      dlab = lcr[7];
 
-    always @(*) begin
-        case (reg_a)
-        3'd0:    rdata = dlab ? dll : (rx_valid ? rx_data : 8'h00);
-        3'd1:    rdata = dlab ? dlm : {4'h0, ier};
-        3'd2:    rdata = fifo_en ? 8'hC1 : 8'h01;
-        3'd3:    rdata = lcr;
-        3'd4:    rdata = {3'b000, mcr};
-        3'd5:    rdata = {1'b0, !tx_full, !tx_full, 4'b0000, rx_valid && !flush};
-        3'd6:    rdata = 8'hB0;           // DCD | DSR | CTS
-        default: rdata = scr;
+    reg rbr_ok = 1'b0;                    // the sampled RBR read holds a byte
+    always @(posedge clk) if (sample) begin
+        rbr_ok <= sample_a == 3'd0 && !dlab && rx_valid && !flush;
+        case (sample_a)
+        3'd0:    rdata <= dlab ? dll : (rx_valid ? rx_data : 8'h00);
+        3'd1:    rdata <= dlab ? dlm : {4'h0, ier};
+        3'd2:    rdata <= fifo_en ? 8'hC1 : 8'h01;
+        3'd3:    rdata <= lcr;
+        3'd4:    rdata <= {3'b000, mcr};
+        3'd5:    rdata <= {1'b0, !tx_full, !tx_full, 4'b0000, rx_valid && !flush};
+        3'd6:    rdata <= 8'hB0;          // DCD | DSR | CTS
+        default: rdata <= scr;
         endcase
     end
 
@@ -60,7 +66,7 @@ module com16550 (
             ier <= 4'h0; mcr <= 5'h00; fifo_en <= 1'b0;
             flush <= 1'b1;
         end else begin
-            if (rd && reg_a == 3'd0 && !dlab && rx_valid && !flush) pop_rd <= 1'b1;
+            if (rd && rbr_ok && !flush) pop_rd <= 1'b1;
             if (wr) case (reg_a)
                 3'd0: if (dlab) dll <= wdata;
                       else begin tx_push <= 1'b1; tx_data <= wdata; end

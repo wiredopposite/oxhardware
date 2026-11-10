@@ -11,7 +11,9 @@
 // which needs the system clock >= ~4x the byte rate (24 MHz is fine).
 //
 // Bus side (clk): one-cycle wr / rd strobes with space/addr; rdata is sampled the cycle
-// after rd. Reads use one dummy byte in every space.
+// after rd. Reads use one dummy byte in every space. Reads are fetched two bytes ahead of
+// the one being sent; rd_sent marks each data byte actually sent, in fetch order, so a
+// FIFO port can take back the fetches a transaction ended without sending.
 `default_nettype none
 
 module link_slave (
@@ -31,7 +33,9 @@ module link_slave (
     output reg  [2:0]  space = 3'd0,
     output reg  [23:0] addr = 24'd0,
     output reg  [7:0]  wdata = 8'd0,
-    input  wire [7:0]  rdata
+    input  wire [7:0]  rdata,
+    output reg         rd_sent = 1'b0,      // a read data byte has been shifted out
+    output wire        idle                 // no transaction (CS# high, synchronised)
 );
     // ------------------------------------------------------------ SCK domain
     reg [2:0] bit_cnt = 3'd0;
@@ -82,6 +86,7 @@ module link_slave (
         tog_s <= {tog_s[1:0], byte_tog};
     end
     wire active = !cs_s[3];
+    assign idle = !active;
     wire got    = tog_s[2] ^ tog_s[1];
 
     reg [2:0] idx = 3'd0;              // byte index, saturates at 5
@@ -89,6 +94,7 @@ module link_slave (
     always @(posedge clk) begin
         wr <= 1'b0;
         rd <= 1'b0;
+        rd_sent <= 1'b0;
         rd_pend <= rd;
         if (rd_pend) tx_hold <= rdata;
         if (rst || !active) begin
@@ -112,6 +118,7 @@ module link_slave (
                 default: begin
                     if (is_rd) begin
                         if (!noinc) addr <= addr + 1'b1;
+                        rd_sent <= (idx == 3'd5);
                         rd <= 1'b1;                  // addr updates now; rd sees it next cycle
                     end else begin
                         wdata <= rx_byte;

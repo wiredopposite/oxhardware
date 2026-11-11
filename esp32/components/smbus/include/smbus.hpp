@@ -1,7 +1,8 @@
 #pragma once
 
-// Xbox SMBus master (docs/03-esp32.md §13). The console's pull-ups only; the MCPX is the
-// other master, so every transfer can fail with lost arbitration and is retried.
+// Xbox SMBus (docs/03-esp32.md §13): a slave at 0x60 by default, a master only for the
+// length of each transfer. The console's pull-ups only; the MCPX is the other master, so
+// every transfer can fail with lost arbitration and is retried.
 
 #include <cstddef>
 #include <cstdint>

@@ -97,6 +97,11 @@ inline constexpr uint16_t SmbusRead = 0x0400;
 inline constexpr uint16_t SmbusWrite = 0x0401;
 inline constexpr uint16_t SmcPower = 0x0402;
 inline constexpr uint16_t ProgXfer = 0x0500;
+inline constexpr uint16_t NorInfo = 0x0600;
+inline constexpr uint16_t NorRead = 0x0601;
+inline constexpr uint16_t NorErase = 0x0602;
+inline constexpr uint16_t NorWrite = 0x0603;
+inline constexpr uint16_t NorCrc = 0x0604;
 }
 
 // Takes over UART0 at the console baud rate, routes ESP-IDF logging into Log frames and

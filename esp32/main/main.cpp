@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "fpga_link.hpp"
 #include "host_link.hpp"
+#include "nor.hpp"
 #include "prog_server.hpp"
 #include "smbus.hpp"
 #include "sys_cmds.hpp"
@@ -16,6 +17,8 @@ extern "C" void app_main(void)
     CfgBus::RegisterCommands();
     FpgaLink::Init();
     FpgaLink::RegisterCommands();
+    Nor::Init();
+    Nor::RegisterCommands();
     Smbus::Init();
     Smbus::RegisterCommands();
     ProgServer::RegisterCommands();

@@ -20,6 +20,11 @@
     py -3 tools/oxctl.py -p COM12 link test [--count N] [--mhz F]         # scratch register stress
     py -3 tools/oxctl.py -p COM12 link read ADDR [--len N] [--space S]
     py -3 tools/oxctl.py -p COM12 link write ADDR HEXBYTES [--space S]
+    py -3 tools/oxctl.py -p COM12 nor info                      # flash through the running FPGA
+    py -3 tools/oxctl.py -p COM12 nor read OUT --addr A --len N
+    py -3 tools/oxctl.py -p COM12 nor write FILE --addr A       # erase, program, verify
+    py -3 tools/oxctl.py -p COM12 nor erase --addr A --len N
+    py -3 tools/oxctl.py -p COM12 nor crc --addr A --len N
     py -3 tools/oxctl.py -p COM12 prog info                     # programmer protocol (docs/07)
     py -3 tools/oxctl.py -p COM12 prog smbus-read ADDR REG
     py -3 tools/oxctl.py -p COM12 prog smbus-write ADDR REG VALUE
@@ -48,6 +53,7 @@ FLASH_PROBE = 0x0208
 LINK_READ, LINK_WRITE, LINK_PROBE, LINK_CLOCK = 0x0300, 0x0301, 0x0302, 0x0303
 SMBUS_READ, SMBUS_WRITE, SMC_POWER = 0x0400, 0x0401, 0x0402
 PROG_XFER = 0x0500
+NOR_INFO, NOR_READ, NOR_ERASE, NOR_WRITE, NOR_CRC = 0x0600, 0x0601, 0x0602, 0x0603, 0x0604
 SMC = 0x10
 
 LEVELS = ["none", "error", "warn", "info", "debug", "verbose"]
@@ -254,6 +260,54 @@ def prog(link, mode, action, payload=b""):
     return body
 
 
+def cmd_nor(link, a):
+    if a.what == "info":
+        r = link.request(NOR_INFO)
+        print(f"engine {'ready' if r[0] else 'not ready'}  flash ID: {r[1:4].hex(' ').upper()}")
+        return
+    t0 = time.time()
+    if a.what == "read":
+        out = bytearray()
+        while len(out) < a.len:
+            n = min(4096, a.len - len(out))
+            out += link.request(NOR_READ, struct.pack("<IH", a.addr + len(out), n), timeout=15)
+            print(f"\rread {len(out)}/{a.len}", end="", flush=True)
+        print()
+        with open(a.file, "wb") as f:
+            f.write(out)
+        print(f"read {len(out)} bytes from 0x{a.addr:06X} to {a.file} in {time.time() - t0:.1f} s")
+    elif a.what == "erase":
+        for off in range(0, a.len, 0x10000):
+            n = min(0x10000, a.len - off)
+            link.request(NOR_ERASE, struct.pack("<II", a.addr + off, n), timeout=15)
+        print(f"erased {a.len} bytes at 0x{a.addr:06X} in {time.time() - t0:.1f} s")
+    elif a.what == "crc":
+        crc = Reader(link.request(NOR_CRC, struct.pack("<II", a.addr, a.len), timeout=15)).u32()
+        print(f"CRC {crc:08X} over {a.len} bytes at 0x{a.addr:06X} ({time.time() - t0:.2f} s)")
+    elif a.what == "write":
+        data = open(a.file, "rb").read()
+        if a.addr & 0xFFF:
+            raise LinkError("--addr must be a multiple of 4 KB")
+        span = (len(data) + 0xFFF) & ~0xFFF
+        for off in range(0, span, 0x10000):
+            n = min(0x10000, span - off)
+            link.request(NOR_ERASE, struct.pack("<II", a.addr + off, n), timeout=15)
+            print(f"\rerased {off + n}/{span}", end="", flush=True)
+        print()
+        for off in range(0, len(data), 4096):
+            link.request(NOR_WRITE, struct.pack("<I", a.addr + off) + data[off:off + 4096],
+                         timeout=15)
+            print(f"\rwritten {min(off + 4096, len(data))}/{len(data)}", end="", flush=True)
+        print()
+        crc = Reader(link.request(NOR_CRC, struct.pack("<II", a.addr, len(data)),
+                                  timeout=15)).u32()
+        want = zlib.crc32(data)
+        if crc != want:
+            raise LinkError(f"verify failed: flash CRC {crc:08X}, file {want:08X}")
+        print(f"verified {len(data)} bytes at 0x{a.addr:06X} (CRC {crc:08X}) "
+              f"in {time.time() - t0:.1f} s")
+
+
 def cmd_prog(link, a):
     if a.what == "info":
         f = struct.unpack_from("<H3B3BBBB6BBBBIII", prog(link, MODE_CONTROL, CTL_GET_INFO)
@@ -316,6 +370,11 @@ def main():
     s.add_argument("--space", type=int, default=0)
     s.add_argument("--count", type=int, default=200)
     s.add_argument("--mhz", type=float, help="set the link clock first (kept until reboot)")
+    s = sub.add_parser("nor")
+    s.add_argument("what", choices=["info", "read", "write", "erase", "crc"])
+    s.add_argument("file", nargs="?")
+    s.add_argument("--addr", type=lambda x: int(x, 0), default=0)
+    s.add_argument("--len", type=lambda x: int(x, 0), default=0)
     s = sub.add_parser("prog")
     s.add_argument("what", choices=["info", "smbus-read", "smbus-write"])
     s.add_argument("args", nargs="*", type=lambda x: int(x, 0))
@@ -344,6 +403,10 @@ def main():
             cmd_xbox(link, a)
         elif a.group == "link":
             cmd_link(link, a)
+        elif a.group == "nor":
+            if a.what in ("read", "write") and not a.file:
+                sys.exit(f"nor {a.what}: file required")
+            cmd_nor(link, a)
         elif a.group == "prog":
             if a.what.startswith("smbus") and len(a.args) < 2:
                 sys.exit(f"prog {a.what}: ADDR REG required")

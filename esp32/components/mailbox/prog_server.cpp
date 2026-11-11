@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "rom_mgr.hpp"
 #include "smbus.hpp"
 
 namespace ProgServer {
@@ -83,6 +84,7 @@ Status GetInfo(Out &out)
     i.BootFlags = flags;
     i.ActiveEntry = i.ArmedEntry = i.UserEntry = NoEntry;
     i.LoaderEntry = i.SystemEntry = i.DiagEntry = NoEntry;
+    RomMgr::FillInfo(i);
     return Status::Ok;
 }
 
@@ -110,8 +112,15 @@ Status Control(const Parser &in, Out &out)
         }
         return Smbus::WriteByte(t.Address, t.Command, t.Value) ? Status::Ok : Status::SmbusError;
     }
+    case ControlAction::Boot: {
+        BootRequest b;
+        if (!Take(in, b)) {
+            return Status::BadSize;
+        }
+        return RomMgr::Boot(b);
+    }
     default:
-        // Boot and ConfirmBoot work on catalogue entries: they come with rom_mgr
+        // ConfirmBoot comes with trial updates (06-boot-flow §7)
         return Status::BadCommand;
     }
 }
@@ -185,6 +194,16 @@ void Handle(const Parser &in, Packet &reply)
         switch (h.Cmd.Mode()) {
         case Mode::Control:
             st = Control(in, out);
+            break;
+        case Mode::Rom:
+            st = RomMgr::Rom(h.Cmd.Action(), in.Payload(), h.Length, out.Payload(), out.Len);
+            break;
+        case Mode::Upload:
+            st = RomMgr::Upload(h.Cmd.Action(), in.Payload(), h.Length, out.Payload(), out.Len);
+            break;
+        case Mode::Download:
+            st = RomMgr::Download(h.Cmd.Action(), in.Payload(), h.Length, out.Payload(),
+                                  out.Len);
             break;
         default:
             st = Status::BadCommand;

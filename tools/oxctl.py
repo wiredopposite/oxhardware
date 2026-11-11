@@ -25,6 +25,12 @@
     py -3 tools/oxctl.py -p COM12 nor write FILE --addr A       # erase, program, verify
     py -3 tools/oxctl.py -p COM12 nor erase --addr A --len N
     py -3 tools/oxctl.py -p COM12 nor crc --addr A --len N
+    py -3 tools/oxctl.py -p COM12 rom list                      # ROM library (docs/03 §5)
+    py -3 tools/oxctl.py -p COM12 rom upload FILE [--name N] [--type user|loader|system|diag] [--user] [--boot]
+    py -3 tools/oxctl.py -p COM12 rom download ID|active OUT
+    py -3 tools/oxctl.py -p COM12 rom delete|user ID
+    py -3 tools/oxctl.py -p COM12 rom rename ID NAME
+    py -3 tools/oxctl.py -p COM12 rom boot ID [--reset]
     py -3 tools/oxctl.py -p COM12 prog info                     # programmer protocol (docs/07)
     py -3 tools/oxctl.py -p COM12 prog smbus-read ADDR REG
     py -3 tools/oxctl.py -p COM12 prog smbus-write ADDR REG VALUE
@@ -241,8 +247,15 @@ PROG_MAGIC = 0x5046584F
 PROG_STATUS = ["Ok", "ConsoleOn", "ProgrammerBusy", "LayoutInvalid", "NotStarted", "BadSize",
                "BadOffset", "BadCommand", "FlashError", "CrcMismatch", "NotFound", "Protected",
                "NoSpace", "ConsoleOff", "SmbusError"]
-MODE_CONTROL = 1
-CTL_GET_INFO, CTL_REBOOT, CTL_SMBUS_READ, CTL_SMBUS_WRITE = 0, 1, 2, 3
+MODE_CONTROL, MODE_UPLOAD, MODE_DOWNLOAD, MODE_ROM = 1, 2, 3, 4
+CTL_GET_INFO, CTL_REBOOT, CTL_SMBUS_READ, CTL_SMBUS_WRITE, CTL_BOOT = 0, 1, 2, 3, 4
+ROM_LIST, ROM_GET, ROM_DELETE, ROM_RENAME, ROM_SET_USER = 0, 1, 2, 3, 4
+UP_BEGIN, UP_WRITE, UP_COMMIT, UP_ABORT = 0, 1, 2, 3
+DOWN_BEGIN, DOWN_READ, DOWN_END = 0, 1, 2
+ROLES = ["user", "loader", "system", "diag"]
+UPLOAD_TYPES = {"user": 1, "loader": 2, "system": 3, "diag": 4}
+ROM_ENTRY = struct.Struct("<BBBBIIIHH33s")
+ROM_FLAGS = [(0x01, "current"), (0x02, "trial"), (0x04, "failed-boot"), (0x08, "user")]
 
 
 def prog(link, mode, action, payload=b""):
@@ -331,6 +344,90 @@ def cmd_prog(link, a):
         print("ok")
 
 
+def rom_entries(body):
+    for k in range(0, len(body) - ROM_ENTRY.size + 1, ROM_ENTRY.size):
+        yield ROM_ENTRY.unpack_from(body, k)
+
+
+def rom_name(raw):
+    return raw.split(b"\0", 1)[0].decode(errors="replace")
+
+
+def cmd_rom(link, a):
+    args = a.args
+    need = lambda n, usage: len(args) >= n or sys.exit(f"rom {a.what}: {usage}")
+    if a.what == "list":
+        rows, first = [], 0
+        while True:
+            body = prog(link, MODE_ROM, ROM_LIST, bytes([first]))
+            got = list(rom_entries(body))
+            rows += got
+            if len(got) < 4096 // ROM_ENTRY.size or not got:
+                break
+            first = got[-1][0] + 1
+        if not rows:
+            print("catalogue empty")
+        for (eid, role, bank, flags, size, crc, src, ver, _, name) in rows:
+            fl = ",".join(n for b, n in ROM_FLAGS if flags & b)
+            print(f"{eid:3}  {ROLES[role] if role < 4 else role:6}  slot {bank & 0x3F:2}  "
+                  f"{size // 1024:5} K  CRC {crc:08X}  {rom_name(name):32} {fl}")
+    elif a.what == "upload":
+        need(1, "FILE [--name N] [--type T] [--user] [--boot]")
+        data = open(args[0], "rb").read()
+        name = (a.name or os.path.splitext(os.path.basename(args[0]))[0]).encode()[:32]
+        flags = (0x02 if a.user else 0) | (0x04 if a.boot else 0)
+        t0 = time.time()
+        prog(link, MODE_UPLOAD, UP_BEGIN,
+             struct.pack("<BBHI33s", UPLOAD_TYPES[a.type], 0, 0, len(data), name))
+        try:
+            for off in range(0, len(data), 4092):
+                prog(link, MODE_UPLOAD, UP_WRITE, struct.pack("<I", off) + data[off:off + 4092])
+                print(f"\rwritten {min(off + 4092, len(data))}/{len(data)}", end="", flush=True)
+            print()
+            body = prog(link, MODE_UPLOAD, UP_COMMIT,
+                        struct.pack("<IIHBB", zlib.crc32(data), 0, 0, flags, 0))
+        except LinkError:
+            try:
+                prog(link, MODE_UPLOAD, UP_ABORT)
+            except LinkError:
+                pass
+            raise
+        e = ROM_ENTRY.unpack_from(body)
+        print(f"entry {e[0]}: slot {e[2] & 0x3F}, CRC {e[5]:08X}, {time.time() - t0:.1f} s")
+    elif a.what == "download":
+        need(2, "ID|active OUT")
+        begin = bytes([2, 0]) if args[0] == "active" else bytes([1, int(args[0], 0)])
+        size, crc = struct.unpack("<II", prog(link, MODE_DOWNLOAD, DOWN_BEGIN, begin))
+        out = bytearray()
+        while len(out) < size:
+            n = min(4096, size - len(out))
+            out += prog(link, MODE_DOWNLOAD, DOWN_READ, struct.pack("<II", len(out), n))
+            print(f"\rread {len(out)}/{size}", end="", flush=True)
+        print()
+        prog(link, MODE_DOWNLOAD, DOWN_END)
+        if zlib.crc32(out) != crc:
+            raise LinkError(f"download CRC {zlib.crc32(out):08X}, expected {crc:08X}")
+        open(args[1], "wb").write(out)
+        print(f"{size} bytes to {args[1]} (CRC {crc:08X})")
+    elif a.what == "delete":
+        need(1, "ID")
+        prog(link, MODE_ROM, ROM_DELETE, bytes([int(args[0], 0)]))
+        print("deleted")
+    elif a.what == "rename":
+        need(2, "ID NAME")
+        prog(link, MODE_ROM, ROM_RENAME, struct.pack("<B33s", int(args[0], 0),
+                                                    args[1].encode()[:32]))
+        print("renamed")
+    elif a.what == "user":
+        need(1, "ID|none")
+        prog(link, MODE_ROM, ROM_SET_USER, bytes([0xFF if args[0] == "none" else int(args[0], 0)]))
+        print("power-button ROM set")
+    elif a.what == "boot":
+        need(1, "ID [--reset]")
+        prog(link, MODE_CONTROL, CTL_BOOT, bytes([int(args[0], 0), 1 if a.reset else 0]))
+        print("armed" + (", console reset" if a.reset else " for the next reset"))
+
+
 def cmd_log(link, a):
     level = LEVELS.index(a.level)
     link.request(LOG_LEVEL, bytes([level]) + (a.tag or "").encode())
@@ -378,6 +475,15 @@ def main():
     s = sub.add_parser("prog")
     s.add_argument("what", choices=["info", "smbus-read", "smbus-write"])
     s.add_argument("args", nargs="*", type=lambda x: int(x, 0))
+    s = sub.add_parser("rom")
+    s.add_argument("what", choices=["list", "upload", "download", "delete", "rename", "user",
+                                    "boot"])
+    s.add_argument("args", nargs="*")
+    s.add_argument("--name")
+    s.add_argument("--type", choices=list(UPLOAD_TYPES), default="user")
+    s.add_argument("--user", action="store_true", help="upload: make it the power-button ROM")
+    s.add_argument("--boot", action="store_true", help="upload: boot it from the next reset")
+    s.add_argument("--reset", action="store_true", help="boot: reset the console now")
     s = sub.add_parser("monitor")
     s.add_argument("--reset", action="store_true", help="reset the ESP32 after opening")
     a = p.parse_args()
@@ -407,6 +513,8 @@ def main():
             if a.what in ("read", "write") and not a.file:
                 sys.exit(f"nor {a.what}: file required")
             cmd_nor(link, a)
+        elif a.group == "rom":
+            cmd_rom(link, a)
         elif a.group == "prog":
             if a.what.startswith("smbus") and len(a.args) < 2:
                 sys.exit(f"prog {a.what}: ADDR REG required")

@@ -61,6 +61,8 @@ enum class Status : uint8_t {
     ConsoleOff,
     // Nothing acked on the SMBus
     SmbusError,
+    // No free slots of the size asked for, but RomAction::Compact can make some
+    Fragmented,
 
     // Reported by the client, never sent by the chip
     Timeout = 0xFE,
@@ -102,7 +104,10 @@ enum class RomAction : uint8_t {
     // RomRename
     Rename,
     // RomRef, 0xFF for none: what a power-button boot runs
-    SetUser
+    SetUser,
+    // RomCompact, replies RomCompactStep: moves one entry towards a free run of
+    // ImageSize. Repeat until Moved is NoEntry.
+    Compact
 };
 
 enum class UploadAction : uint8_t {
@@ -313,6 +318,17 @@ struct RomRef {
 struct RomRename {
     uint8_t Entry;
     char    Name[NameMax + 1];
+};
+
+struct RomCompact {
+    uint32_t ImageSize;
+};
+
+struct RomCompactStep {
+    // The entry moved, NoEntry once a run of ImageSize is free
+    uint8_t Moved;
+    // Moves still to go after this one
+    uint8_t Remaining;
 };
 
 struct UploadBegin {

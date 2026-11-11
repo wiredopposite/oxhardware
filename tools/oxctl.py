@@ -26,7 +26,8 @@
     py -3 tools/oxctl.py -p COM12 nor erase --addr A --len N
     py -3 tools/oxctl.py -p COM12 nor crc --addr A --len N
     py -3 tools/oxctl.py -p COM12 rom list                      # ROM library (docs/03 §5)
-    py -3 tools/oxctl.py -p COM12 rom upload FILE [--name N] [--type user|loader|system|diag] [--user] [--boot]
+    py -3 tools/oxctl.py -p COM12 rom upload FILE [--name N] [--type user|loader|system|diag] [--user] [--boot] [--compact]
+    py -3 tools/oxctl.py -p COM12 rom compact SIZE                # e.g. 1M: move entries to free a run
     py -3 tools/oxctl.py -p COM12 rom download ID|active OUT
     py -3 tools/oxctl.py -p COM12 rom delete|user ID
     py -3 tools/oxctl.py -p COM12 rom rename ID NAME
@@ -246,10 +247,10 @@ def cmd_xbox(link, a):
 PROG_MAGIC = 0x5046584F
 PROG_STATUS = ["Ok", "ConsoleOn", "ProgrammerBusy", "LayoutInvalid", "NotStarted", "BadSize",
                "BadOffset", "BadCommand", "FlashError", "CrcMismatch", "NotFound", "Protected",
-               "NoSpace", "ConsoleOff", "SmbusError"]
+               "NoSpace", "ConsoleOff", "SmbusError", "Fragmented"]
 MODE_CONTROL, MODE_UPLOAD, MODE_DOWNLOAD, MODE_ROM = 1, 2, 3, 4
 CTL_GET_INFO, CTL_REBOOT, CTL_SMBUS_READ, CTL_SMBUS_WRITE, CTL_BOOT = 0, 1, 2, 3, 4
-ROM_LIST, ROM_GET, ROM_DELETE, ROM_RENAME, ROM_SET_USER = 0, 1, 2, 3, 4
+ROM_LIST, ROM_GET, ROM_DELETE, ROM_RENAME, ROM_SET_USER, ROM_COMPACT = 0, 1, 2, 3, 4, 5
 UP_BEGIN, UP_WRITE, UP_COMMIT, UP_ABORT = 0, 1, 2, 3
 DOWN_BEGIN, DOWN_READ, DOWN_END = 0, 1, 2
 ROLES = ["user", "loader", "system", "diag"]
@@ -258,19 +259,43 @@ ROM_ENTRY = struct.Struct("<BBBBIIIHH33s")
 ROM_FLAGS = [(0x01, "current"), (0x02, "trial"), (0x04, "failed-boot"), (0x08, "user")]
 
 
-def prog(link, mode, action, payload=b""):
+def prog(link, mode, action, payload=b"", timeout=2.0):
     cmd = (mode & 0x0F) | (action << 4)
     hdr = struct.pack("<IBBHI", PROG_MAGIC, cmd, 0, len(payload),
                       zlib.crc32(payload) if payload else 0)
-    r = link.request(PROG_XFER, hdr + struct.pack("<I", zlib.crc32(hdr)) + payload)
+    r = link.request(PROG_XFER, hdr + struct.pack("<I", zlib.crc32(hdr)) + payload,
+                     timeout=timeout)
     magic, rcmd, status, n, pcrc, hcrc = struct.unpack_from("<IBBHII", r)
     body = r[16:16 + n]
     if magic != PROG_MAGIC or hcrc != zlib.crc32(r[:12]) or rcmd != cmd or len(body) != n             or (n and pcrc != zlib.crc32(body)):
         raise LinkError("prog: malformed reply")
     if status:
         name = PROG_STATUS[status] if status < len(PROG_STATUS) else f"status {status}"
-        raise LinkError(f"prog: {name}")
+        raise ProgError(status, f"prog: {name}")
     return body
+
+
+class ProgError(LinkError):
+    def __init__(self, status, msg):
+        super().__init__(msg)
+        self.status = status
+
+
+def rom_compact(link, size):
+    t0 = time.time()
+    while True:
+        # Each step copies up to 512 K
+        moved, left = prog(link, MODE_ROM, ROM_COMPACT, struct.pack("<I", size), timeout=60)
+        if moved == 0xFF:
+            break
+        print(f"moved entry {moved} ({left} to go)")
+    print(f"{size // 1024} K free in {time.time() - t0:.1f} s")
+
+
+def parse_size(t):
+    t = t.upper()
+    mul = {"K": 1024, "M": 1024 * 1024}.get(t[-1:], 1)
+    return int(t.rstrip("KM"), 0) * mul
 
 
 def cmd_nor(link, a):
@@ -376,9 +401,18 @@ def cmd_rom(link, a):
         data = open(args[0], "rb").read()
         name = (a.name or os.path.splitext(os.path.basename(args[0]))[0]).encode()[:32]
         flags = (0x02 if a.user else 0) | (0x04 if a.boot else 0)
+        begin = struct.pack("<BBHI33s", UPLOAD_TYPES[a.type], 0, 0, len(data), name)
+        try:
+            prog(link, MODE_UPLOAD, UP_BEGIN, begin)
+        except ProgError as e:
+            if e.status != PROG_STATUS.index("Fragmented"):
+                raise
+            if not a.compact:
+                sys.exit("no free run of that size until entries are moved: "
+                         "add --compact, or run rom compact first")
+            rom_compact(link, len(data))
+            prog(link, MODE_UPLOAD, UP_BEGIN, begin)
         t0 = time.time()
-        prog(link, MODE_UPLOAD, UP_BEGIN,
-             struct.pack("<BBHI33s", UPLOAD_TYPES[a.type], 0, 0, len(data), name))
         try:
             for off in range(0, len(data), 4092):
                 prog(link, MODE_UPLOAD, UP_WRITE, struct.pack("<I", off) + data[off:off + 4092])
@@ -422,6 +456,9 @@ def cmd_rom(link, a):
         need(1, "ID|none")
         prog(link, MODE_ROM, ROM_SET_USER, bytes([0xFF if args[0] == "none" else int(args[0], 0)]))
         print("power-button ROM set")
+    elif a.what == "compact":
+        need(1, "SIZE (256K, 512K or 1M)")
+        rom_compact(link, parse_size(args[0]))
     elif a.what == "boot":
         need(1, "ID [--reset]")
         prog(link, MODE_CONTROL, CTL_BOOT, bytes([int(args[0], 0), 1 if a.reset else 0]))
@@ -477,12 +514,14 @@ def main():
     s.add_argument("args", nargs="*", type=lambda x: int(x, 0))
     s = sub.add_parser("rom")
     s.add_argument("what", choices=["list", "upload", "download", "delete", "rename", "user",
-                                    "boot"])
+                                    "boot", "compact"])
     s.add_argument("args", nargs="*")
     s.add_argument("--name")
     s.add_argument("--type", choices=list(UPLOAD_TYPES), default="user")
     s.add_argument("--user", action="store_true", help="upload: make it the power-button ROM")
     s.add_argument("--boot", action="store_true", help="upload: boot it from the next reset")
+    s.add_argument("--compact", action="store_true",
+                   help="upload: move entries if there is room but no free run")
     s.add_argument("--reset", action="store_true", help="boot: reset the console now")
     s = sub.add_parser("monitor")
     s.add_argument("--reset", action="store_true", help="reset the ESP32 after opening")

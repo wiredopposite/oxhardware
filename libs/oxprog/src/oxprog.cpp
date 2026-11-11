@@ -50,6 +50,7 @@ const char *StatusName(Status Status)
     case Status::NoSpace: return "no free slot";
     case Status::ConsoleOff: return "the console is off";
     case Status::SmbusError: return "no SMBus response";
+    case Status::Fragmented: return "no free slot until compacted";
     case Status::Timeout: return "no reply";
     case Status::TransportError: return "transport error";
     }

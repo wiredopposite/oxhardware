@@ -196,6 +196,24 @@ Status Client::SetUserRom(uint8_t Entry)
     return Transact(Mode::Rom, uint8_t(RomAction::SetUser), &ref, sizeof(ref));
 }
 
+Status Client::CompactRoms(uint32_t ImageSize)
+{
+    RomCompact compact{ ImageSize };
+    for (;;) {
+        // Each step copies up to 512 K
+        const auto status = Transact(Mode::Rom, uint8_t(RomAction::Compact), &compact,
+                                     sizeof(compact), CommitTimeoutMs);
+        if (status != Status::Ok) {
+            return status;
+        }
+        RomCompactStep step{};
+        TakeReply(step);
+        if (step.Moved == NoEntry) {
+            return Status::Ok;
+        }
+    }
+}
+
 Status Client::AbortUpload()
 {
     return Transact(Mode::Upload, uint8_t(UploadAction::Abort), nullptr, 0);

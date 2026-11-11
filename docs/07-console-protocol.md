@@ -54,12 +54,13 @@ CRC-32 is IEEE (zlib). The chip answers every command with exactly one reply car
 | | 2 Delete | `RomRef` | User ROMs and spare slots only |
 | | 3 Rename | `RomRename` | |
 | | 4 SetUser | `RomRef` | The power-button ROM, `0xFF` for none |
+| | 5 Compact | `RomCompact` → `RomCompactStep` | Moves one entry towards a free run of `ImageSize`; repeat until `Moved` is `0xFF` |
 
 Upload types: retail tables, user ROM, Loader, System, Diag, ESP32 firmware, FPGA bitstream. Download types: retail tables, a catalogue entry, the ROM being served.
 
 Commit flags: `Trial` (Loader, System: boot once on trial, current only after confirming); `User` (make a user ROM the power-button ROM); `Boot` (boot it from the console's next reset). An upload from the console of a Loader or System is always on trial.
 
-The console can't erase or program the slot it is running from, or a current Loader, System or Diag (`Protected`). Uploads go to a free slot of the right size (`NoSpace` if none) or the role's spare slot.
+The console can't erase or program the slot it is running from, or a current Loader, System or Diag (`Protected`). Uploads go to a free slot of the right size or the role's spare slot: `Fragmented` if `Compact` can free one, `NoSpace` if not.
 
 ## 4. Status
 
@@ -80,6 +81,7 @@ The console can't erase or program the slot it is running from, or a current Loa
 | 12 | NoSpace | |
 | 13 | ConsoleOff | Needs the console on |
 | 14 | SmbusError | Nothing acked |
+| 15 | Fragmented | No free run of that size, but `Compact` can make one |
 
 `0xFE` Timeout and `0xFF` TransportError are reported by the client only.
 

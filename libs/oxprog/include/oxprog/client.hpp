@@ -55,6 +55,8 @@ public:
     Status RenameRom(uint8_t Entry, const char *Name);
     // NoEntry for none
     Status SetUserRom(uint8_t Entry);
+    // Moves entries until a run of ImageSize is free (after an upload's Fragmented)
+    Status CompactRoms(uint32_t ImageSize);
 
     // Begin, the image in chunks, then commit with its CRC. Aborted on the
     // chip if anything fails part way. For the ROM types Entry (if given)

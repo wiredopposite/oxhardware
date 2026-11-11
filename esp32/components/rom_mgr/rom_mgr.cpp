@@ -188,14 +188,15 @@ int FreeEntry()
 
 uint32_t BankAddr(uint8_t bank) { return L.RomBase + BankSlot(bank) * SlotSize; }
 
+// n slots from s
+uint64_t Run(uint32_t s, uint32_t n) { return (n >= 64 ? ~0ull : (1ull << n) - 1) << s; }
+
 uint64_t SlotMask(uint8_t bank)
 {
-    if (bank == NoBank) {
-        return 0;
-    }
-    const uint32_t n = BankSize(bank) / SlotSize;
-    return ((n >= 64 ? ~0ull : (1ull << n) - 1)) << BankSlot(bank);
+    return bank == NoBank ? 0 : Run(BankSlot(bank), BankSize(bank) / SlotSize);
 }
+
+uint32_t Slots(const CatEntry &e) { return e.Size / SlotSize; }
 
 // ------------------------------------------------------------ FPGA bank registers
 // docs/01-interface.md §5.2
@@ -220,9 +221,7 @@ bool ReadBanks(Banks &b)
     return true;
 }
 
-// Slots that must not be written: the catalogue's, and what is served now, by default
-// and on the armed boot
-uint64_t UsedSlots()
+uint64_t CatSlots()
 {
     uint64_t used = 0;
     for (const CatEntry &e : Cat.Entry) {
@@ -230,29 +229,153 @@ uint64_t UsedSlots()
             used |= SlotMask(e.Bank);
         }
     }
+    return used;
+}
+
+// What the FPGA serves now, by default and on the armed boot: never written, and the
+// entries there never moved
+bool PinnedSlots(uint64_t &pinned)
+{
     Banks b;
     if (!ReadBanks(b)) {
-        return ~0ull;
+        return false;
     }
-    used |= SlotMask(b.Active) | SlotMask(b.Default);
+    pinned = SlotMask(b.Active) | SlotMask(b.Default);
     if (b.Status & StatusArmed) {
-        used |= SlotMask(b.Pending);
+        pinned |= SlotMask(b.Pending);
     }
-    return used;
+    return true;
+}
+
+// Slots that must not be written
+uint64_t UsedSlots()
+{
+    uint64_t pinned;
+    return PinnedSlots(pinned) ? CatSlots() | pinned : ~0ull;
+}
+
+constexpr uint32_t ImageSlotsMax = 4;      // 1 M
+
+// Best fit: of the free runs of n slots aligned to n, the one whose enclosing blocks (up
+// to the largest image) are most used, so small images pack together and large aligned
+// runs stay open. Slots past the end count as used: a block the end cuts short can't
+// take the largest image anyway. Ties go to the lowest slot.
+bool Place(uint64_t used, uint32_t n, uint8_t &slot)
+{
+    const uint64_t full = used | ~Run(0, L.Slots);
+    int best = -1;
+    int best_score = -1;
+    for (uint32_t s = 0; s + n <= L.Slots; s += n) {
+        if (full & Run(s, n)) {
+            continue;
+        }
+        int score = 0;
+        for (uint32_t m = n * 2; m <= ImageSlotsMax; m *= 2) {
+            score += __builtin_popcountll(full & Run(s / m * m, m));
+        }
+        if (score > best_score) {
+            best = int(s);
+            best_score = score;
+        }
+    }
+    slot = uint8_t(best);
+    return best >= 0;
 }
 
 bool Alloc(uint32_t size, uint8_t &bank)
 {
-    const uint64_t used = UsedSlots();
-    const uint32_t n = size / SlotSize;
-    for (uint32_t s = 0; s + n <= L.Slots; s += n) {   // aligned to the size
-        const uint64_t want = ((1ull << n) - 1) << s;
-        if (!(used & want)) {
-            bank = MakeBank(uint8_t(s), size);
-            return true;
+    uint8_t s;
+    if (!Place(UsedSlots(), size / SlotSize, s)) {
+        return false;
+    }
+    bank = MakeBank(s, size);
+    return true;
+}
+
+// ------------------------------------------------------------ compaction
+// The catalogue entries inside a run, largest first
+int EntriesIn(uint64_t run, int (&ids)[EntriesMax])
+{
+    int k = 0;
+    for (int i = 0; i < EntriesMax; i++) {
+        if (Valid(Cat.Entry[i]) && (SlotMask(Cat.Entry[i].Bank) & run)) {
+            int j = k++;
+            for (; j > 0 && Cat.Entry[ids[j - 1]].Size < Cat.Entry[i].Size; j--) {
+                ids[j] = ids[j - 1];
+            }
+            ids[j] = i;
         }
     }
-    return false;
+    return k;
+}
+
+// The aligned run of n slots cheapest to empty: nothing pinned in it, and every entry in
+// it fits elsewhere (placed largest first, as Compact moves them). Moves is the number of
+// entries to move.
+bool PlanCompact(uint32_t n, uint64_t &run, int &moves)
+{
+    uint64_t pinned;
+    if (!PinnedSlots(pinned)) {
+        return false;
+    }
+    const uint64_t used = CatSlots() | pinned;
+    uint32_t best_cost = UINT32_MAX;
+    for (uint32_t s = 0; s + n <= L.Slots; s += n) {
+        const uint64_t r = Run(s, n);
+        if (r & pinned) {
+            continue;
+        }
+        int ids[EntriesMax];
+        const int k = EntriesIn(r, ids);
+        uint64_t sim = used | r;
+        uint32_t cost = 0;
+        bool fits = true;
+        for (int i = 0; i < k && fits; i++) {
+            const uint32_t m = Slots(Cat.Entry[ids[i]]);
+            uint8_t to;
+            fits = Place(sim, m, to);
+            sim |= Run(to, m);
+            cost += m;
+        }
+        if (fits && cost < best_cost) {
+            best_cost = cost;
+            run = r;
+            moves = k;
+        }
+    }
+    return best_cost != UINT32_MAX;
+}
+
+uint8_t CopyBuf[4096];
+
+// Copies an entry to dest and verifies it before the catalogue points there; the old
+// slots keep their contents until something reuses them
+Status Move(int id, uint8_t dest)
+{
+    CatEntry &e = Cat.Entry[id];
+    const uint32_t from = BankAddr(e.Bank);
+    const uint32_t to = BankAddr(dest);
+    if (!Nor::Erase(to, e.Size)) {
+        return Status::FlashError;
+    }
+    for (uint32_t off = 0; off < e.Size; off += sizeof(CopyBuf)) {
+        if (!Nor::Read(from + off, CopyBuf, sizeof(CopyBuf)) ||
+            !Nor::Write(to + off, CopyBuf, sizeof(CopyBuf))) {
+            return Status::FlashError;
+        }
+    }
+    uint32_t crc;
+    if (!Nor::Crc32(to, e.Size, &crc) || crc != e.Crc32) {
+        return Status::FlashError;
+    }
+    const uint8_t old = e.Bank;
+    e.Bank = dest;
+    if (!Save()) {
+        e.Bank = old;
+        return Status::FlashError;
+    }
+    ESP_LOGI(Tag, "entry %d moved from slot %u to %u", id, BankSlot(old), BankSlot(dest));
+    return Status::Ok;
 }
 
 // The banks the Loader reads (06-boot-flow §4), from the catalogue
@@ -380,9 +503,15 @@ Status UploadBegin(const uint8_t *in, size_t len)
     if (st != Status::Ok) {
         return st;
     }
-    uint8_t bank;
-    if (FreeEntry() == NoEntry || !Alloc(b.ImageSize, bank)) {
+    if (FreeEntry() == NoEntry) {
         return Status::NoSpace;
+    }
+    uint8_t bank;
+    if (!Alloc(b.ImageSize, bank)) {
+        uint64_t run;
+        int moves;
+        return PlanCompact(b.ImageSize / SlotSize, run, moves) ? Status::Fragmented
+                                                                 : Status::NoSpace;
     }
     Up = {};
     Up.Active = true;
@@ -484,6 +613,46 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
     return Status::Ok;
 }
 
+Status Compact(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
+{
+    RomCompact c;
+    if (!Take(in, len, c) || !c.ImageSize || c.ImageSize % SlotSize ||
+        c.ImageSize > ImageSlotsMax * SlotSize) {
+        return Status::BadSize;
+    }
+    if (UploadLive()) {
+        return Status::ProgrammerBusy;  // its slots aren't in the catalogue yet
+    }
+    const uint32_t n = c.ImageSize / SlotSize;
+    RomCompactStep &step = *reinterpret_cast<RomCompactStep *>(out);
+    step = {NoEntry, 0};
+    out_len = sizeof(step);
+    uint8_t slot;
+    if (Place(UsedSlots(), n, slot)) {
+        return Status::Ok;
+    }
+    uint64_t run;
+    int moves;
+    if (!PlanCompact(n, run, moves)) {
+        return Status::NoSpace;
+    }
+    // The largest entry first, to where the plan put it
+    int ids[EntriesMax];
+    EntriesIn(run, ids);
+    const CatEntry &e = Cat.Entry[ids[0]];
+    uint8_t to;
+    if (!Place(UsedSlots() | run, Slots(e), to)) {
+        return Status::NoSpace;
+    }
+    const Status st = Move(ids[0], MakeBank(to, e.Size));
+    if (st != Status::Ok) {
+        return st;
+    }
+    Apply();
+    step = {uint8_t(ids[0]), uint8_t(moves - 1)};
+    return Status::Ok;
+}
+
 }
 
 // ------------------------------------------------------------ protocol
@@ -564,6 +733,8 @@ Status Rom(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &
         Apply();
         return Status::Ok;
     }
+    case RomAction::Compact:
+        return Compact(in, len, out, out_len);
     default:
         return Status::BadCommand;
     }

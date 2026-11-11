@@ -9,6 +9,8 @@
 //   - buffered byte at req_addr          -> ack next clock
 //   - req_addr is a little ahead (< 8)   -> keep streaming, discard bytes until it arrives
 //   - anything else                      -> restart the read at req_addr
+// park (synchronised here) hands the flash to another master between reads: the stream
+// deselects, drops its buffer and reports parked; requests wait until park is released.
 // At power-up (and whenever 'rst' is asserted) it sends Release-Power-Down (0xAB) first:
 // the iCE40 may leave the flash in deep power-down after configuration.
 //
@@ -23,6 +25,8 @@
 module spi_stream (
     input  wire        clk,
     input  wire        rst,            // sync, active high: abort, deselect, re-wake
+    input  wire        park,           // async: deselect and leave the flash alone
+    output reg         parked = 1'b0,
     // requester
     input  wire        req,
     input  wire [23:0] req_addr,
@@ -65,7 +69,15 @@ module spi_stream (
         in_reach <= (state == S_DATA || state == S_CMD || state == S_GAP) && (ahead < 24'd8);
         req_d    <= req;
     end
-    wire do_req     = req && req_d && !ack && !settle;
+    // Parking waits for the wake sequence, so the flash is never left powered down
+    reg [1:0] park_s = 2'b00;
+    reg       hold = 1'b0;
+    always @(posedge clk) begin
+        park_s <= {park_s[0], park};
+        hold   <= park_s[1] && state != S_WAKE && state != S_WAKEGAP;
+        parked <= hold && spi_cs_n;     // deselected for at least a clock
+    end
+    wire do_req     = req && req_d && !ack && !settle && !hold;
     wire do_hit     = do_req && hit0;
     wire do_skip    = do_req && !hit0 && in_reach;
     wire can_rst    = (state == S_IDLE || state == S_CMD || state == S_DATA);
@@ -90,6 +102,14 @@ module spi_stream (
             gap      <= 8'd4;
             tx       <= {8'hAB, 24'd0};
             nbits    <= 6'd8;
+        end else if (hold) begin
+            settle   <= 1'b0;
+            state    <= S_IDLE;
+            spi_cs_n <= 1'b1;
+            spi_sck  <= 1'b0;
+            phase    <= 1'b0;
+            pend     <= 1'b0;
+            v0 <= 1'b0; v1 <= 1'b0;
         end else begin
             // ---------------------------------------------------------- requester
             // (buffer pops happen here; pushes below may land in the same clock)

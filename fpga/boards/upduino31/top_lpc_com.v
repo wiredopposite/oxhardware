@@ -10,10 +10,12 @@
 //
 // Boot control port for the Loader at 0x00E0 (bootctl_port), one-shot armed boots.
 // Mailbox: the programmer protocol's console port at 0x0B00, to the ESP32 over the link.
+// NOR engine: the ESP32 reads, programs, erases and CRCs the flash over the link, between
+// BIOS reads (nor_ctrl, spi_stream parks for it).
 //
 // Write the image first:  make DESIGN=lpc_com rom ROM=<file>
 // Link: ESP32 SPI slave, register space 0 (identity, scratch, LPC status, banks, IRQs,
-// mailbox), SPACE 3 port 1 (mailbox FIFOs).
+// mailbox, NOR engine), SPACE 3 port 1 (mailbox FIFOs), port 3 (NOR buffer).
 // LED: blue = serving reads, green = idle, red = COM output, red blink = no 12 MHz clock.
 `default_nettype none
 
@@ -100,18 +102,20 @@ module top_lpc_com (
         .stat_addr(st_addr), .stat_data(), .lframe_holding(holding), .dbg_state()
     );
 
-    wire f_cs_n, f_sck, f_mosi;
+    wire f_cs_n, f_sck, f_mosi, s_parked;
+    wire nor_park, nor_own, n_cs_n, n_sck, n_mosi;
     spi_stream u_flash (
         .clk(lpc_clk), .rst(tgt_in_reset),           // re-wake the flash on every boot
+        .park(nor_park), .parked(s_parked),
         .req(req), .req_addr(req_addr), .ack(ack), .ack_data(ack_data),
         .restarted(restarted),
         .spi_cs_n(f_cs_n), .spi_sck(f_sck), .spi_mosi(f_mosi), .spi_miso(flash_miso)
     );
-    // The flash pins are only driven while the console is out of reset, so a programmer
-    // on the same pins (iceprog) never fights a running design. CS# has a pull-up.
-    assign flash_csn  = tgt_in_reset ? 1'bz : f_cs_n;
-    assign flash_sck  = tgt_in_reset ? 1'bz : f_sck;
-    assign flash_mosi = tgt_in_reset ? 1'bz : f_mosi;
+    // The NOR engine drives the flash while it holds it; otherwise spi_stream does, only
+    // while the console is out of reset. CS# has a pull-up.
+    assign flash_csn  = nor_own ? n_cs_n : tgt_in_reset ? 1'bz : f_cs_n;
+    assign flash_sck  = nor_own ? n_sck  : tgt_in_reset ? 1'bz : f_sck;
+    assign flash_mosi = nor_own ? n_mosi : tgt_in_reset ? 1'bz : f_mosi;
 
     // ------------------------------------------------------------ LCLK domain: I/O devices
     // Port decode, registered on the last address nibble so the claim decision on the
@@ -208,6 +212,8 @@ module top_lpc_com (
     wire        l_wr, l_rd, l_miso, l_miso_oe;
     wire        armed, irq, bank_hit, mbx_hit, mbx_irq, mbx_sts, l_rd_sent, l_idle;
     wire [7:0]  mbx_rdata, mbx_fdata;
+    wire        nor_hit, nor_busy, nor_done, crc_done;
+    wire [7:0]  nor_rdata, nor_bdata;
     wire [7:0]  bank_rdata;
     wire [2:0]  l_space;
     wire [23:0] l_addr;
@@ -216,14 +222,14 @@ module top_lpc_com (
         .clk(clk), .rst(rst),
         .sck(link_sck), .cs_n(link_cs_n), .mosi(link_mosi),
         .miso(l_miso), .miso_oe(l_miso_oe),
-        .sts({irq, lrst_s[1], !inrst_s[1], 2'd0, mbx_sts, 2'd0}),
+        .sts({irq, lrst_s[1], !inrst_s[1], 2'd0, mbx_sts, 1'b0, nor_busy}),
         .wr(l_wr), .rd(l_rd), .space(l_space), .addr(l_addr),
         .wdata(l_wdata), .rdata(l_rdata), .rd_sent(l_rd_sent), .idle(l_idle)
     );
     assign link_miso  = l_miso_oe ? l_miso : 1'bz;
     assign fpga_irq_n = !irq;
 
-    link_regs #(.BOARD_ID(8'h01), .FEATURES(16'h004F)) u_regs (
+    link_regs #(.BOARD_ID(8'h01), .FEATURES(16'h006F)) u_regs (
         .clk(clk), .wr(l_wr && l_space == 3'd0), .addr(l_addr[15:0]), .wdata(l_wdata),
         .rdata(reg_rdata), .lreset_n(lrst_s[1]), .served_pulse(served_pulse),
         .armed(armed)
@@ -232,7 +238,8 @@ module top_lpc_com (
         .clk(clk), .wr(l_wr && l_space == 3'd0), .addr(l_addr[15:0]), .wdata(l_wdata),
         .rdata(bank_rdata), .hit(bank_hit),
         .lreset_n(lrst_s[1]), .served_pulse(served_pulse), .served_addr(st_addr),
-        .cp_tog(bc_tog), .cp_off(bc_off), .cp_data(bc_data), .mbx_irq(mbx_irq),
+        .cp_tog(bc_tog), .cp_off(bc_off), .cp_data(bc_data),
+        .irq_set({6'd0, nor_done, crc_done, 2'd0, mbx_irq, 5'd0}),
         .lpc_ctrl(lpc_ctrl), .bank_base(bank_base), .bank_size(bank_size),
         .bootctl_base(bootctl_base), .port_vals(bc_vals), .armed(armed), .irq(irq)
     );
@@ -246,8 +253,18 @@ module top_lpc_com (
         .io_addr_nxt(io_addr_nxt), .io_rd(io_rd), .io_wr(io_wr), .io_wdata(io_wdata),
         .io_hit(mbx_io_hit), .io_rdata(mbx_io_rdata)
     );
-    assign l_rdata = l_mbx ? mbx_fdata : (l_space != 3'd0) ? 8'h00 :
-                     bank_hit ? bank_rdata : mbx_hit ? mbx_rdata : reg_rdata;
+    wire l_nbuf = (l_space == 3'd3) && (l_addr[7:0] == 8'h03);
+    nor_ctrl u_nor (
+        .clk(clk), .wr(l_wr && l_space == 3'd0), .addr(l_addr[15:0]), .wdata(l_wdata),
+        .rdata(nor_rdata), .hit(nor_hit),
+        .b_wr(l_wr && l_nbuf), .b_rd(l_rd && l_nbuf), .b_rdata(nor_bdata), .b_idle(l_idle),
+        .lpc_req(req), .lreset_n(lrst_s[1]), .park(nor_park), .parked(s_parked),
+        .own(nor_own), .f_cs_n(n_cs_n), .f_sck(n_sck), .f_mosi(n_mosi), .f_miso(flash_miso),
+        .busy(nor_busy), .nor_done(nor_done), .crc_done(crc_done)
+    );
+    assign l_rdata = l_mbx ? mbx_fdata : l_nbuf ? nor_bdata : (l_space != 3'd0) ? 8'h00 :
+                     bank_hit ? bank_rdata : mbx_hit ? mbx_rdata :
+                     nor_hit ? nor_rdata : reg_rdata;
 
     // ------------------------------------------------------------ LED
     reg [21:0] act = 0, com_act = 0;

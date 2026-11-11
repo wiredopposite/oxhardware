@@ -34,6 +34,8 @@ module tb;
         .link_sck(l_sck), .link_cs_n(l_cs), .link_mosi(l_mosi), .link_miso(l_miso),
         .fpga_irq_n(irq_n)
     );
+    // NOR engine: shorter idle wait for simulation (100 us)
+    defparam dut.u_nor.QUIET_CLKS = 2400;
     spi_flash_model flash (.cs_n(f_cs), .sck(f_sck), .mosi(f_mosi), .miso(f_miso));
 
     always #15 lclk = ~lclk;                  // 33.3 MHz
@@ -402,6 +404,149 @@ module tb;
         end
     endtask
 
+    // ---------------------------------------------------------------- NOR engine
+    task nor_wait;                              // until NOR_STATUS busy clears
+        begin
+            lbuf[0] = 8'h04;
+            while (lbuf[0] & 8'h04) begin #5_000; link_xfer(8'h80, 16'h00C0, 1); end
+        end
+    endtask
+    task nor_op(input [23:0] a, input [7:0] len_m1, input [7:0] op);
+        begin
+            lw(16'h00C8, a[7:0]); lw(16'h00C9, a[15:8]); lw(16'h00CA, a[23:16]);
+            lw(16'h00CC, len_m1);
+            lw(16'h00CB, op);
+        end
+    endtask
+    task nor_check(input [23:0] a, input integer n, input [7:0] xr);   // buffer vs mem ^ xr
+        integer k;
+        begin
+            nor_op(a, n - 1, 8'd5); nor_wait;
+            link_xfer(8'hB8, 16'h0003, n);
+            for (k = 0; k < n; k = k + 1)
+                if (lbuf[k] !== (flash.mem[a + k] ^ xr)) begin
+                    $display("ERROR: NOR read %h = %h, expected %h", a + k, lbuf[k], flash.mem[a + k] ^ xr);
+                    errors = errors + 1;
+                end
+        end
+    endtask
+    function [31:0] crc_mem(input [19:0] a, input integer n);
+        integer k, b; reg [31:0] c; reg [7:0] v;
+        begin
+            c = 32'hFFFFFFFF;
+            for (k = 0; k < n; k = k + 1) begin
+                v = flash.mem[a + k];
+                for (b = 0; b < 8; b = b + 1) begin
+                    c = (c[0] ^ v[b]) ? ((c >> 1) ^ 32'hEDB88320) : (c >> 1);
+                end
+            end
+            crc_mem = ~c;
+        end
+    endfunction
+    task crc_check(input [23:0] a, input [23:0] n);
+        reg [31:0] want;
+        begin
+            want = crc_mem(a[19:0], n);
+            lw(16'h00D0, a[7:0]); lw(16'h00D1, a[15:8]); lw(16'h00D2, a[23:16]);
+            lw(16'h00D3, n[7:0]); lw(16'h00D4, n[15:8]); lw(16'h00D5, n[23:16]);
+            lw(16'h00D6, 8'h01);
+        end
+    endtask
+    task crc_expect(input [23:0] a, input [23:0] n);
+        reg [31:0] want;
+        begin
+            want = crc_mem(a[19:0], n);
+            nor_wait;
+            link_expect(8'h80, 16'h00D8, 4, want);
+        end
+    endtask
+    task nor_tests;
+        integer k, t0, wmax0;
+        begin
+            // Idle after boot: the engine has woken the flash and read its ID
+            #200_000;
+            link_expect(8'h80, 16'h00C0, 1, 32'h01);            // init done, idle
+            link_expect(8'h80, 16'h00C2, 3, 32'h1640EF);
+
+            // Read into the buffer
+            nor_check(24'h040000, 16, 8'h00);
+            nor_check(24'h080010, 40, 8'h00);
+
+            // Erase 4 K, program 16 bytes, then 100 (chunked) across a page's start
+            nor_op(24'h0F0000, 0, 8'd1); nor_wait;
+            nor_check(24'h0F0000, 16, 8'h00);
+            if (flash.mem[20'hF0000] !== 8'hFF || flash.mem[20'hF0FFF] !== 8'hFF) begin
+                $display("ERROR: erase 4 K"); errors = errors + 1;
+            end
+            for (k = 0; k < 16; k = k + 1) lbuf[k] = 8'h10 + k;
+            link_xfer(8'h38, 16'h0003, 16);
+            nor_op(24'h0F0010, 15, 8'd3); nor_wait;
+            for (k = 0; k < 16; k = k + 1)
+                if (flash.mem[20'hF0010 + k] !== 8'h10 + k) begin
+                    $display("ERROR: program %h = %h", 20'hF0010 + k, flash.mem[20'hF0010 + k]);
+                    errors = errors + 1;
+                end
+            for (k = 0; k < 63; k = k + 1) lbuf[k] = 8'h80 ^ k;
+            link_xfer(8'h38, 16'h0003, 63);
+            for (k = 0; k < 37; k = k + 1) lbuf[k] = 8'hC0 ^ k;
+            link_xfer(8'h38, 16'h0003, 37);              // a new transaction starts at 0
+            nor_op(24'h0F0100, 36, 8'd3); nor_wait;
+            for (k = 0; k < 37; k = k + 1)
+                if (flash.mem[20'hF0100 + k] !== (8'hC0 ^ k)) begin
+                    $display("ERROR: program %h = %h", 20'hF0100 + k, flash.mem[20'hF0100 + k]);
+                    errors = errors + 1;
+                end
+            if (flash.mem[20'hF0125] !== 8'hFF) begin $display("ERROR: programmed too far"); errors = errors + 1; end
+            nor_op(24'h0F00F0, 31, 8'd3);                // crosses a page: refused
+            link_expect(8'h80, 16'h00C0, 1, 32'h21);
+
+            // Bitstream area: refused unless unlocked, for one operation
+            nor_op(24'h010000, 0, 8'd1);
+            link_expect(8'h80, 16'h00C0, 1, 32'h21);
+            lw(16'h00CD, 8'h5A);
+            nor_op(24'h010000, 0, 8'd1); nor_wait;
+            link_expect(8'h80, 16'h00C0, 1, 32'h01);
+            nor_op(24'h011000, 0, 8'd1);
+            link_expect(8'h80, 16'h00C0, 1, 32'h21);
+
+            // CRC of slot 0, interrupted by BIOS reads: they wait for the engine, it
+            // continues afterwards, the result is right
+            lw(16'h0010, 8'hFF); lw(16'h0011, 8'hFF);
+            crc_check(24'h040000, 24'h001000);
+            #150_000;                                   // the engine holds the flash now
+            wmax0 = wait_max; wait_max = 0;
+            run(32'hFF000400, 16);
+            $display("NOR: BIOS reads during CRC, longest wait %0d clocks", wait_max);
+            crc_expect(24'h040000, 24'h001000);
+            link_expect(8'h80, 16'h0011, 1, 32'h01);    // CRC_DONE
+
+            // Erase 64 K, interrupted: suspended for the BIOS reads, resumed after
+            nor_op(24'h0E0000, 0, 8'd2);
+            #150_000;
+            wait_max = 0;
+            run(32'hFF000500, 16);
+            $display("NOR: BIOS reads during erase, longest wait %0d clocks, suspends %0d",
+                     wait_max, flash.suspends);
+            if (flash.suspends == 0) begin $display("ERROR: erase was not suspended"); errors = errors + 1; end
+            nor_wait;
+            if (flash.mem[20'hE0000] !== 8'hFF || flash.mem[20'hEFFFF] !== 8'hFF) begin
+                $display("ERROR: erase 64 K"); errors = errors + 1;
+            end
+            if (wmax0 > wait_max) wait_max = wmax0;
+
+            // Console in reset: the engine works without waiting for BIOS reads to stop
+            lrst_n = 0; #150_000;
+            nor_check(24'h040100, 8, 8'h00);
+            console_reset;
+            run(32'hFF000600, 8);
+
+            if (flash.violations != 0) begin
+                $display("ERROR: %0d flash access violations", flash.violations);
+                errors = errors + 1;
+            end
+        end
+    endtask
+
     task bank_tests;
         begin
             // defaults
@@ -545,7 +690,7 @@ module tb;
             $display("ERROR: link STS %h, expected 60", lsts); errors = errors + 1;
         end
         link_expect(8'h80, 16'h0021, 1, 32'h05);                 // LRESET# high, served
-        link_expect(8'h80, 16'h0007, 3, 32'h004F01);             // BOARD_ID, FEATURES
+        link_expect(8'h80, 16'h0007, 3, 32'h006F01);             // BOARD_ID, FEATURES
         LHALF = 2000;                                            // 250 kHz
         link_expect(8'h80, 16'h0000, 4, "GFXO");
         link_expect(8'h80, 16'h000C, 4, 32'h44332211);
@@ -565,6 +710,7 @@ module tb;
 
         bank_tests;
         mbx_tests;
+        nor_tests;
 
         $display("reads=%0d errors=%0d timeouts=%0d max_wait=%0d uart_out=%0d",
                  reads, errors, timeouts, wait_max, ngot);

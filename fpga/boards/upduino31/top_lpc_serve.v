@@ -120,6 +120,7 @@ module top_lpc_serve (
 
     spi_stream u_flash (
         .clk(lpc_clk), .rst(!lrst_hi_l),             // re-wake the flash on every boot
+        .park(1'b0), .parked(),
         .req(req && !in_head), .req_addr(req_addr), .ack(ack), .ack_data(ack_data),
         .restarted(restarted),
         .spi_cs_n(flash_csn), .spi_sck(flash_sck), .spi_mosi(flash_mosi), .spi_miso(flash_miso)

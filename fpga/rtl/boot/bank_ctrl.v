@@ -35,8 +35,8 @@ module bank_ctrl #(
     input  wire        cp_tog,
     input  wire [2:0]  cp_off,
     input  wire [7:0]  cp_data,
-    // other IRQ sources (pulses)
-    input  wire        mbx_irq,             // IRQ_STATUS bit5 MBX_RX
+    // other IRQ sources: pulses, one per IRQ_STATUS bit
+    input  wire [15:0] irq_set,
     // to the LPC side (quasi-static)
     output reg  [7:0]  lpc_ctrl = LPC_CTRL_INIT,
     output reg  [7:0]  bank_base = ROM_BASE_64K,   // served bank's flash address, 64 KB units
@@ -69,6 +69,7 @@ module bank_ctrl #(
         valid_bank = (b[7:6] != 2'b11);
     endfunction
 
+    integer   i;
     reg       lreset_q = 1'b0;
     reg [2:0] cp_s = 3'd0;
     wire      lrst_fall = lreset_q && !lreset_n;
@@ -85,7 +86,6 @@ module bank_ctrl #(
         bank_size <= active[7:6];
 
         if (lrst_rise) irq_status[1] <= 1'b1;
-        if (mbx_irq)   irq_status[5] <= 1'b1;
 
         // ---------------------------------------------------- link writes
         if (wr) case (addr)
@@ -126,6 +126,9 @@ module bank_ctrl #(
             if (cp_off == 3'd2 || (cp_off == 3'd3 && cp_data == 8'hA5))
                 irq_status[11] <= 1'b1;
         end
+
+        for (i = 0; i < 16; i = i + 1)
+            if (irq_set[i]) irq_status[i] <= 1'b1;
 
         // ---------------------------------------------------- reset: one-shot arm
         if (lrst_fall) begin

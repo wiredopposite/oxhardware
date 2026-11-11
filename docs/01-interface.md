@@ -74,9 +74,9 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 | 3 | iotrap event FIFO non-empty |
 | 2 | Mailbox / COM-to-ESP32 RX non-empty |
 | 1 | `ERR_STATUS != 0` |
-| 0 | NOR busy (erase/program in progress or suspended) |
+| 0 | NOR engine busy (§5.5) |
 
-**Dummy bytes `D`**: `SPACE` 0/1/3/4 → 1. `SPACE` 2 (NOR read window) → `LINK_NOR_DUMMY` (default 4); underrun sets `ERR_STATUS.NOR_UNDERRUN` (data garbage — check STS or use the CRC engine).
+**Dummy bytes `D`**: 1 in every space.
 
 **Lengths**: unlimited in hardware; firmware uses ≤ 4 KB per transaction.
 
@@ -86,8 +86,8 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 |---|---|
 | 0 | Registers (§5), 8-bit, `A[15:0]` |
 | 1 | USB endpoint slot buffers: slot *k* at `k * 64` (k = 0..31), SETUP packets for device *d* at `0x800 + d*8` |
-| 2 | NOR **read** window, byte address `A[23:0]` (16 MB). Writes are not allowed here — use §5.5. |
-| 3 | FIFO ports (use `NOINC`): `0x00` COM (when routed to ESP32), `0x01` mailbox, `0x02` iotrap events (read-only, 4 bytes/event), `0x03` NOR program buffer (256 B) |
+| 2 | Reserved (the flash is read through the NOR engine, §5.5) |
+| 3 | FIFO ports (use `NOINC`): `0x00` COM (when routed to ESP32), `0x01` mailbox, `0x02` iotrap events (read-only, 4 bytes/event), `0x03` NOR buffer (256 B; every transaction starts at offset 0) |
 | 4–7 | Reserved |
 
 ## 5. Register map (SPACE 0)
@@ -106,7 +106,7 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 | 0x0C–0x0F | `SCRATCH` | RW | Link test |
 | 0x10–0x11 | `IRQ_STATUS` | W1C | bit0 `LRST_ASSERT`, 1 `LRST_DEASSERT`, 2 `BANK_SWAPPED`, 3 `USB`, 4 `IOTRAP` (FIFO above threshold or deferred read pending), 5 `MBX_RX`, 6 `COM_RX`, 7 `ERROR`, 8 `CRC_DONE`, 9 `NOR_DONE`, 10 `FLASHEMU` (Xbox started/finished a flash write sequence), 11 `BOOTCTL` (console armed a bank or confirmed) |
 | 0x12–0x13 | `IRQ_ENABLE` | RW | Same bits |
-| 0x14 | `ERR_STATUS` | W1C | bit0 `NOR_UNDERRUN`, 1 `FIFO_UNDERRUN`, 2 `FIFO_OVERFLOW`, 3 `LPC_SYNC_TIMEOUT`, 4 `LINK_BAD_CMD`, 5 `IOTRAP_OVERFLOW`, 6 `FLASHEMU_PROTECT` (write to protected bank refused) |
+| 0x14 | `ERR_STATUS` | W1C | bit0 reserved, 1 `FIFO_UNDERRUN`, 2 `FIFO_OVERFLOW`, 3 `LPC_SYNC_TIMEOUT`, 4 `LINK_BAD_CMD`, 5 `IOTRAP_OVERFLOW`, 6 `FLASHEMU_PROTECT` (write to protected bank refused) |
 | 0x15 | `SOFT_RESET` | SC | `0xA5`: reset all blocks except link |
 
 ### 5.2 LPC — `0x0020`
@@ -173,21 +173,22 @@ Event record (SPACE 3 port 2, 4 bytes, little-endian): `port[15:0]`, `data[7:0]`
 
 | Addr | Name | Access | Description |
 |---|---|---|---|
-| 0xC0 | `NOR_STATUS` | RO | bit0 init done; bit1 quad enabled; bit2 busy; bit3 suspended (LPC read pre-empted an erase/program); bit4 CRC busy |
-| 0xC1 | `LINK_NOR_DUMMY` | RW | Default 4 |
-| 0xC2–0xC4 | `NOR_JEDEC_ID` | RO | Captured at init |
-| 0xC8–0xCA | `NOR_OP_ADDR` | RW | |
-| 0xCB | `NOR_OP` | SC | 1 = erase 4 K, 2 = erase 64 K, 3 = program from SPACE 3 port 3 buffer (≤ 256 B, page-aligned), 4 = write status/config regs; raises `NOR_DONE`. Refused (error) for the bitstream region unless `NOR_UNLOCK = 0x5A`. |
-| 0xCC | `NOR_PROG_LEN` | RW | Bytes in the program buffer − 1 |
-| 0xCD | `NOR_UNLOCK` | RW | `0x5A` permits ops below `ROM_BASE` (bitstream/config); clears after one op |
-| 0xD0–0xD2 | `CRC_ADDR` | RW | |
-| 0xD3–0xD5 | `CRC_LEN` | RW | |
-| 0xD6 | `CRC_CTRL` | SC | bit0 start → `CRC_DONE` |
+| 0xC0 | `NOR_STATUS` | RO | bit0 flash woken and ID read; bit1 quad enabled; bit2 busy; bit3 an erase/program is suspended for BIOS reads; bit4 CRC running; bit5 the last `NOR_OP` was refused |
+| 0xC2–0xC4 | `NOR_JEDEC_ID` | RO | Manufacturer, type, capacity |
+| 0xC8–0xCA | `NOR_OP_ADDR` | WO | |
+| 0xCB | `NOR_OP` | SC | 1 = erase 4 K, 2 = erase 64 K, 3 = program `NOR_LEN` + 1 bytes from the buffer (within one 256-byte page), 5 = read `NOR_LEN` + 1 bytes into the buffer; raises `NOR_DONE`. Ignored while busy. Erase and program below the ROM catalogue (the bitstream) are refused unless `NOR_UNLOCK = 0x5A`. |
+| 0xCC | `NOR_LEN` | WO | Bytes − 1 |
+| 0xCD | `NOR_UNLOCK` | WO | `0x5A` permits the next operation on the bitstream area; cleared by every `NOR_OP` |
+| 0xD0–0xD2 | `CRC_ADDR` | WO | |
+| 0xD3–0xD5 | `CRC_LEN` | WO | |
+| 0xD6 | `CRC_CTRL` | SC | bit0 start → `CRC_DONE`. Ignored while busy. |
 | 0xD8–0xDB | `CRC_RESULT` | RO | CRC-32 IEEE (zlib / `esp_rom_crc32_le` compatible) |
 | 0xE0 | `FE_CTRL` | RW | bit0 enable JEDEC flash emulation; bit1 chip-erase maps to active bank only (always 1 — read-only) |
 | 0xE1–0xE2 | `FE_ID` | RW | Manufacturer / device ID returned in autoselect mode (from boot config) |
 | 0xE3 | `FE_STATUS` | RO | bit0 Xbox in a program/erase sequence; bit1 last op refused (protected); bits 7:4 last command type |
 | 0xE4–0xE6 | `FE_LAST_ADDR` | RO | |
+
+The engine shares the flash with BIOS serving, which always comes first. It takes the flash only after the console has gone 1 ms without reading it, or has been in reset that long, and gives it back within ~30 µs when a BIOS read arrives: reads and CRCs stop between bytes and carry on later, programs go out in 32-byte pieces, and an erase or program in progress is suspended until the console is quiet again. A 256 KB CRC takes about 0.2 s, a buffer read or program about 0.2 ms plus the link transfers.
 
 ### 5.6 Mailbox — `0x0100`
 

@@ -13,6 +13,11 @@
 //     console has gone quiet again. A suspend is never sent within RESUME_GAP of a resume.
 // SCK = clk / 2 (12 MHz at 24 MHz), MISO sampled where SCK falls (as in spi_stream).
 //
+// A program or erase is checked: status 1 must show WEL after WREN (else WREN again),
+// and WEL must be clear once BUSY is (else the command was not taken: the chunk or erase
+// is sent again). After MAX_TRIES attempts the operation ends as refused. NOR_MISS counts
+// both cases.
+//
 // Link registers 0xC0-0xDB: addresses and lengths are write-only and take effect byte by
 // byte; NOR_OP and CRC_CTRL are ignored while busy. SPACE 3 port 3 is the buffer; each link transaction to it
 // starts at offset 0.
@@ -24,7 +29,8 @@ module nor_ctrl #(
     parameter integer TRES_CLKS  = 96,           // release from power-down, 3 us + margin
     parameter integer SUS_CLKS   = 24,           // after 0x75, then BUSY is polled
     parameter integer RESUME_GAP = 2400,         // 100 us
-    parameter integer PROG_CHUNK = 32
+    parameter integer PROG_CHUNK = 32,
+    parameter integer MAX_TRIES  = 8
 ) (
     input  wire        clk,
     // link register bus
@@ -74,7 +80,7 @@ module nor_ctrl #(
     localparam [3:0] O_IDLE = 4'd0, O_ACQ = 4'd1, O_WAKE = 4'd2, O_TRES = 4'd3,
                      O_JEDEC = 4'd4, O_STEP = 4'd5, O_WREN = 4'd6, O_CMD = 4'd7,
                      O_POLL = 4'd8, O_SUS = 4'd9, O_SUSWAIT = 4'd10, O_RESUME = 4'd11,
-                     O_RELEASE = 4'd12, O_FINISH = 4'd13;
+                     O_RELEASE = 4'd12, O_FINISH = 4'd13, O_WCHK = 4'd14;
     localparam [1:0] X_IDLE = 2'd0, X_LOAD = 2'd1, X_BITS = 2'd2, X_GAP = 2'd3;
 
     reg [3:0]  os = O_ACQ;                  // wake the flash and read the ID first
@@ -86,6 +92,9 @@ module nor_ctrl #(
     reg [23:0] left = 24'd0;                // data bytes still to go
     reg [7:0]  bidx = 8'd0;                 // buffer index of the next data byte
     reg [5:0]  chunk = 6'd0;
+    reg [7:0]  bidx0 = 8'd0;                // buffer index where the chunk started
+    reg [3:0]  tries = 4'd0;
+    reg [7:0]  miss_wren = 8'd0, miss_cmd = 8'd0;
     reg [23:0] jedec = 24'd0;
     reg        init_done = 1'b0, refused = 1'b0, suspended = 1'b0;
     reg [15:0] tmr = 16'd0;
@@ -261,10 +270,22 @@ module nor_ctrl #(
                 os <= O_WREN;
         O_WREN:
             if (!sent) frame({8'h06, 24'd0}, 3'd1, 1'b0, 2'd0);
-            else if (x_done) os <= O_CMD;
+            else if (x_done) os <= O_WCHK;
+        O_WCHK:                                     // WEL set?
+            if (!sent) frame({8'h05, 24'd0}, 3'd1, 1'b0, 2'd1);
+            else if (x_done) begin
+                if (x_val[1]) os <= O_CMD;
+                else begin
+                    if (miss_wren != 8'hFF) miss_wren <= miss_wren + 1'b1;
+                    tries <= tries + 1'b1;
+                    if (tries == MAX_TRIES - 1) begin refused <= 1'b1; os <= O_FINISH; end
+                    else os <= O_WREN;
+                end
+            end
         O_CMD:
             if (!sent) begin
                 if (kind == K_PROG) begin
+                    bidx0 <= bidx;
                     chunk <= (left[8:0] > PROG_CHUNK) ? PROG_CHUNK[5:0] : left[5:0];
                     frame({8'h02, cur}, 3'd4, 1'b1, 2'd0);
                 end else
@@ -273,7 +294,14 @@ module nor_ctrl #(
         O_POLL:                                     // status 1 until BUSY clears
             if (!sent) frame({8'h05, 24'd0}, 3'd1, 1'b0, 2'd1);
             else if (x_done) begin
-                if (!x_val[0]) begin
+                if (!x_val[0] && x_val[1]) begin    // WEL still set: the command was not taken
+                    if (miss_cmd != 8'hFF) miss_cmd <= miss_cmd + 1'b1;
+                    tries <= tries + 1'b1;
+                    bidx  <= bidx0;
+                    if (tries == MAX_TRIES - 1) begin refused <= 1'b1; os <= O_FINISH; end
+                    else os <= O_STEP;
+                end else if (!x_val[0]) begin
+                    tries <= 4'd0;
                     if (kind == K_PROG) begin       // a chunk is in (all full but the last)
                         // programs stay within one page: 9-bit arithmetic is enough
                         cur[7:0]  <= cur[7:0] + PROG_CHUNK[7:0];
@@ -334,6 +362,7 @@ module nor_ctrl #(
                     nor_done <= 1'b1;
                 end else begin
                     kind <= wdata[2:0];
+                    tries <= 4'd0;
                     cur  <= op_addr;
                     left <= {16'd0, op_len} + 1'b1;
                     bidx <= 8'd0;
@@ -342,6 +371,7 @@ module nor_ctrl #(
             end
             16'h00CC: op_len <= wdata;
             16'h00CD: unlock <= wdata;
+            16'h00DC: begin miss_wren <= 8'd0; miss_cmd <= 8'd0; end
             16'h00D0: crc_addr[7:0]   <= wdata;
             16'h00D1: crc_addr[15:8]  <= wdata;
             16'h00D2: crc_addr[23:16] <= wdata;
@@ -373,6 +403,8 @@ module nor_ctrl #(
             16'h00D9: rdata <= crc_result[15:8];
             16'h00DA: rdata <= crc_result[23:16];
             16'h00DB: rdata <= crc_result[31:24];
+            16'h00DC: rdata <= miss_wren;
+            16'h00DD: rdata <= miss_cmd;
             default: begin rdata <= 8'h00; hit <= 1'b0; end
         endcase
     end

@@ -6,6 +6,8 @@
 // 'violations' counts accesses a real part would get wrong: reads or commands while busy,
 // program/erase without WEL, a read of a sector whose erase is suspended.
 // Contents: 1 MB, initialised to FF; tests load images into 'mem'.
+// Faults: 'drop_wren' / 'drop_prog' make the part ignore that many WRENs / page programs
+// (a program it ignores leaves WEL set).
 `timescale 1ns/1ps
 module spi_flash_model #(
     parameter real T_V   = 7.0,
@@ -37,6 +39,7 @@ module spi_flash_model #(
     integer    op_n;
     integer    violations = 0;
     integer    programs = 0, erases = 0, suspends = 0;
+    integer    drop_wren = 0, drop_prog = 0;
 
     initial for (i = 0; i <= 20'hFFFFF; i = i + 1) mem[i] = 8'hFF;
 
@@ -54,7 +57,7 @@ module spi_flash_model #(
                 for (k = 0; k < 4096; k = k + 1) mem[{op_addr[19:12], 12'd0} + k] = 8'hFF;
             else if (op == 3)
                 for (k = 0; k < 65536; k = k + 1) mem[{op_addr[19:16], 16'd0} + k] = 8'hFF;
-            busy = 0; op = 0;
+            busy = 0; op = 0; sus_t = 0;      // a suspend that came too late does nothing
         end
     endtask
 
@@ -91,8 +94,12 @@ module spi_flash_model #(
         out_en = 0;
         if (nbits >= 8 && nbits % 8 == 0) begin
             case (cmd)
-            8'h06: if (!busy) wel = 1;
-            8'h02: if (nbits >= 40) begin op_n = npb; start_op(1, T_PP); end
+            8'h06: if (drop_wren > 0) drop_wren = drop_wren - 1;
+                   else if (!busy) wel = 1;
+            8'h02: if (nbits >= 40) begin
+                       if (drop_prog > 0) drop_prog = drop_prog - 1;
+                       else begin op_n = npb; start_op(1, T_PP); end
+                   end
             8'h20: if (nbits == 32) start_op(2, T_SE);
             8'hD8: if (nbits == 32) start_op(3, T_BE);
             8'h75: if (busy && sus_t <= 0) sus_t = T_SUS;

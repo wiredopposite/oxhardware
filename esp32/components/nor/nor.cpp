@@ -1,5 +1,7 @@
 #include "nor.hpp"
 
+#include <cstring>
+
 #include "cfg_bus.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -23,6 +25,7 @@ constexpr uint16_t RegAddr = 0x00C8;      // 3 bytes, then NOR_OP at 0xCB
 constexpr uint16_t RegLen = 0x00CC;
 constexpr uint16_t RegCrcAddr = 0x00D0;   // 3 bytes address, 3 bytes length, CRC_CTRL
 constexpr uint16_t RegCrc = 0x00D8;
+constexpr uint16_t RegMiss = 0x00DC;    // WRENs and commands the flash didn't take
 constexpr uint32_t BufferPort = 0x03;     // SPACE 3
 
 constexpr uint8_t StInit = 0x01;
@@ -172,6 +175,11 @@ bool Erase(uint32_t addr, uint32_t len)
     return true;
 }
 
+namespace {
+constexpr int ProgramTries = 3;
+uint8_t Verify[Page];
+}
+
 bool Write(uint32_t addr, const uint8_t *data, size_t len)
 {
     Guard g;
@@ -181,13 +189,32 @@ bool Write(uint32_t addr, const uint8_t *data, size_t len)
     while (len) {
         const size_t room = Page - (addr & (Page - 1));
         const size_t n = len < room ? len : room;
-        if (!ProgramChunk(addr, data, n)) {
-            ESP_LOGE(Tag, "program at %06lX failed", (unsigned long)addr);
-            return false;
+        // Each page is read back. Programming only clears bits, so a piece that didn't
+        // take is programmed again over itself.
+        int tries = 0;
+        for (;;) {
+            if (!ProgramChunk(addr, data, n) || !ReadChunk(addr, Verify, n)) {
+                ESP_LOGE(Tag, "program at %06lX failed", (unsigned long)addr);
+                return false;
+            }
+            if (!memcmp(Verify, data, n)) {
+                break;
+            }
+            if (++tries == ProgramTries) {
+                ESP_LOGE(Tag, "program at %06lX doesn't verify", (unsigned long)addr);
+                return false;
+            }
+            ESP_LOGW(Tag, "program at %06lX didn't verify, again", (unsigned long)addr);
         }
         addr += n;
         data += n;
         len -= n;
+    }
+    uint8_t miss[2];
+    if (FpgaLink::Read(Space::Regs, RegMiss, miss, 2) && (miss[0] || miss[1])) {
+        ESP_LOGW(Tag, "flash ignored %u WREN and %u program commands, sent again", miss[0], miss[1]);
+        const uint8_t zero = 0;
+        FpgaLink::Write(Space::Regs, RegMiss, &zero, 1);
     }
     return true;
 }

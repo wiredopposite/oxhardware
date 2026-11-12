@@ -125,7 +125,7 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 | 0x2C–0x2F | `MEM_READ_COUNT` | RO | Since reset |
 | 0x30–0x37 | `PROTECT_MASK` | RW | 64-bit mask, one bit per 256 KB slot: flash emulation may not erase/program it |
 | 0x38–0x39 | `BOOTCTL_BASE` | RW | I/O base of the boot control port (06-boot-flow §4), default `0x00E0` |
-| 0x3A | `BOOT_FLAGS` | RW | 06-boot-flow §4. Reads the flags; writes bit2 → `TRIAL_PENDING` (bit5) and bit3 → `LAST_FAILED`, other bits ignored |
+| 0x3A | `BOOT_FLAGS` | RW | 06-boot-flow §4. Reads the flags; writes bit2 → `TRIAL_PENDING` (bit5), bit3 → `LAST_FAILED`, bit6 = 1 clears `TRIAL_CONFIRMED`, other bits ignored |
 | 0x3B | `USER_BANK` | RW | Bank for power-button boots |
 | 0x3C | `SYSTEM_BANK` | RW | Confirmed System |
 | 0x3D | `DIAG_BANK` | RW | Diag |
@@ -183,6 +183,7 @@ Event record (SPACE 3 port 2, 4 bytes, little-endian): `port[15:0]`, `data[7:0]`
 | 0xD3–0xD5 | `CRC_LEN` | WO | |
 | 0xD6 | `CRC_CTRL` | SC | bit0 start → `CRC_DONE`. Ignored while busy. |
 | 0xD8–0xDB | `CRC_RESULT` | RO | CRC-32 IEEE (zlib / `esp_rom_crc32_le` compatible) |
+| 0xDC–0xDD | `NOR_MISS` | RW | Commands the flash didn't take, sent again: 0xDC WRENs (WEL not set after), 0xDD programs/erases (WEL still set once BUSY clears). Saturate at 255; a write to 0xDC clears both. After 8 attempts the operation ends as refused. |
 | 0xE0 | `FE_CTRL` | RW | bit0 enable JEDEC flash emulation; bit1 chip-erase maps to active bank only (always 1 — read-only) |
 | 0xE1–0xE2 | `FE_ID` | RW | Manufacturer / device ID returned in autoselect mode (from boot config) |
 | 0xE3 | `FE_STATUS` | RO | bit0 Xbox in a program/erase sequence; bit1 last op refused (protected); bits 7:4 last command type |

@@ -461,7 +461,7 @@ module tb;
         end
     endtask
     task nor_tests;
-        integer k, t0, wmax0;
+        integer k, t0, wmax0, pg, bad;
         begin
             // Idle after boot: the engine has woken the flash and read its ID
             #200_000;
@@ -534,6 +534,49 @@ module tb;
             end
             if (wmax0 > wait_max) wait_max = wmax0;
 
+            // Program 64 bytes (two chunks), interrupted by BIOS reads at every point
+            bad = 0;
+            nor_op(24'h0F1000, 0, 8'd1); nor_wait;
+            for (pg = 0; pg < 16; pg = pg + 1) begin
+                for (k = 0; k < 64; k = k + 1) lbuf[k] = 8'h40 ^ k ^ pg;
+                link_xfer(8'h38, 16'h0003, 64);
+                nor_op({12'h0F1, pg[3:0], 8'h00}, 63, 8'd3);
+                #(pg * 3_000);
+                run(32'hFF000700, 4);
+                nor_wait;
+                t0 = bad;
+                for (k = 0; k < 64; k = k + 1)
+                    if (flash.mem[{8'h0F, 4'h1, pg[3:0], 8'h00} + k] !== (8'h40 ^ k ^ pg)) begin
+                        if (bad == t0) $display("NOR: page %0d first wrong +%0d = %h (want %h)", pg, k,
+                            flash.mem[{8'h0F, 4'h1, pg[3:0], 8'h00} + k], 8'h40 ^ k ^ pg);
+                        bad = bad + 1;
+                    end
+                if (bad != t0) $display("NOR: page %0d: %0d wrong", pg, bad - t0);
+            end
+            $display("NOR: programs interrupted by BIOS reads, %0d bytes wrong", bad);
+            if (bad) errors = errors + 1;
+
+            // Lost commands: a WREN or a program the flash ignores is sent again
+            lw(16'h00DC, 8'h00);
+            for (k = 0; k < 64; k = k + 1) lbuf[k] = 8'h5C ^ k;
+            link_xfer(8'h38, 16'h0003, 64);
+            flash.drop_wren = 2; flash.drop_prog = 1;
+            nor_op(24'h0F0200, 63, 8'd3); nor_wait;
+            for (k = 0; k < 64; k = k + 1)
+                if (flash.mem[20'hF0200 + k] !== (8'h5C ^ k)) begin
+                    $display("ERROR: retried program %h = %h", 20'hF0200 + k, flash.mem[20'hF0200 + k]);
+                    errors = errors + 1;
+                end
+            link_expect(8'h80, 16'h00C0, 1, 32'h01);
+            link_expect(8'h80, 16'h00DC, 2, 32'h0102);    // 2 WRENs, 1 program
+            // One that never takes: refused after MAX_TRIES
+            flash.drop_prog = 100;
+            link_xfer(8'h38, 16'h0003, 8);
+            nor_op(24'h0F0300, 7, 8'd3); nor_wait;
+            link_expect(8'h80, 16'h00C0, 1, 32'h21);
+            link_expect(8'h80, 16'h00DD, 1, 32'h09);       // 1 earlier + 8 tries
+            flash.drop_prog = 0;
+
             // Console in reset: the engine works without waiting for BIOS reads to stop
             lrst_n = 0; #150_000;
             nor_check(24'h040100, 8, 8'h00);
@@ -591,8 +634,23 @@ module tb;
             exp_x = 8'h5A; console_reset;
             lr(16'h003A, 8'h06);                                  // ARMED_BOOT, TRIAL
             run(32'hFF000200, 8);
+            expect_wr(16'h00E3, 8'hA5, 1);                        // the trial confirms
+            lr(16'h003A, 8'h56);                                  // + CONFIRMED, TRIAL_CONFIRMED
             exp_x = 8'h00; console_reset;
-            lr(16'h003A, 8'h00);
+            lr(16'h003A, 8'h40);                                  // TRIAL_CONFIRMED survives
+            lw(16'h003A, 8'h40);
+            lr(16'h003A, 8'h00);                                  // until the ESP32 clears it
+            run(32'hFF000200, 8);
+
+            // Armed while LRESET# is held low (console off): applied before it rises
+            lrst_n = 0; #2_000;
+            lw(16'h0023, 8'h01); lw(16'h0020, 8'h1D);
+            lr(16'h0022, 8'h01); lr(16'h003A, 8'h02);             // swapped, ARMED_BOOT
+            lr(16'h0020, 8'h15);                                  // arm consumed
+            lrst_n = 1; #6_000;
+            exp_x = 8'h5A; run(32'hFF000200, 8);
+            exp_x = 8'h00; console_reset;
+            lr(16'h0022, 8'h00); lr(16'h003A, 8'h00);
             run(32'hFF000200, 8);
 
             // ESP32 disarms again before the reset

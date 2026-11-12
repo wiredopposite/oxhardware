@@ -2,9 +2,13 @@
 
 #include <cstring>
 
+#include "cfg_bus.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "fpga_link.hpp"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "nor.hpp"
 #include "smbus.hpp"
 
@@ -15,6 +19,14 @@ using namespace OxProg;
 namespace {
 
 const char *Tag = "rom_mgr";
+
+// The protocol server and the trial watcher both change the catalogue
+SemaphoreHandle_t Lock;
+
+struct Guard {
+    Guard() { xSemaphoreTakeRecursive(Lock, portMAX_DELAY); }
+    ~Guard() { xSemaphoreGiveRecursive(Lock); }
+};
 
 using FpgaLink::Space;
 
@@ -103,6 +115,7 @@ void Empty()
 }
 
 void Apply();
+void TrialResume();
 
 bool Load()
 {
@@ -130,6 +143,7 @@ bool Load()
     }
     Loaded = true;
     Apply();
+    TrialResume();
     return true;
 }
 
@@ -203,12 +217,21 @@ uint32_t Slots(const CatEntry &e) { return e.Size / SlotSize; }
 constexpr uint16_t RegLpcCtrl = 0x0020;
 constexpr uint16_t RegPending = 0x0023;
 constexpr uint16_t RegDefault = 0x0027;
+constexpr uint16_t RegBootFlags = 0x003A;
 constexpr uint16_t RegUserBank = 0x003B;   // USER_BANK, SYSTEM_BANK, DIAG_BANK
 constexpr uint8_t CtrlArm = 0x08;
 constexpr uint8_t StatusArmed = 0x08;
+constexpr uint8_t StatusLreset = 0x01;     // LRESET# high: the console is running
+
+// BOOT_FLAGS (06-boot-flow §4). Writes set TRIAL_PENDING from bit2 and LAST_FAILED from
+// bit3; bit6 set clears TRIAL_CONFIRMED.
+constexpr uint8_t FlagTrial = 0x04;
+constexpr uint8_t FlagLastFailed = 0x08;
+constexpr uint8_t FlagTrialPending = 0x20;
+constexpr uint8_t FlagTrialConfirmed = 0x40;
 
 struct Banks {
-    uint8_t Ctrl, Status, Active, Pending, Default;
+    uint8_t Ctrl, Status, Active, Pending, Resets, Default;
 };
 
 bool ReadBanks(Banks &b)
@@ -217,8 +240,26 @@ bool ReadBanks(Banks &b)
     if (!FpgaLink::Read(Space::Regs, RegLpcCtrl, r, sizeof(r))) {
         return false;
     }
-    b = {r[0], r[1], r[2], r[3], r[7]};
+    b = {r[0], r[1], r[2], r[3], r[4], r[7]};
     return true;
+}
+
+// Bit 7 always reads 0: 0xFF is an FPGA that isn't there (held in reset, unconfigured)
+bool ReadFlags(uint8_t &f)
+{
+    return FpgaLink::Read(Space::Regs, RegBootFlags, &f, 1) && f != 0xFF;
+}
+
+// Keeps LAST_FAILED unless set_failed; sets TRIAL_PENDING to trial; clears TRIAL_CONFIRMED
+bool WriteFlags(bool trial, bool set_failed = false)
+{
+    uint8_t f;
+    if (!ReadFlags(f)) {
+        return false;
+    }
+    const uint8_t w = uint8_t((set_failed ? FlagLastFailed : (f & FlagLastFailed)) |
+                              (trial ? FlagTrial : 0) | FlagTrialConfirmed);
+    return FpgaLink::Write(Space::Regs, RegBootFlags, &w, 1);
 }
 
 uint64_t CatSlots()
@@ -392,15 +433,177 @@ void Apply()
     }
 }
 
-bool Arm(uint8_t bank)
+void TrialCancel();
+void ClearFlag(Role kind, uint8_t flag);
+
+bool Arm(uint8_t bank, bool trial = false)
 {
+    if (!trial) {
+        TrialCancel();          // the new arm replaces an armed trial
+    }
     uint8_t ctrl;
-    if (!FpgaLink::Write(Space::Regs, RegPending, &bank, 1) ||
+    if (!FpgaLink::Write(Space::Regs, RegPending, &bank, 1) || !WriteFlags(trial) ||
         !FpgaLink::Read(Space::Regs, RegLpcCtrl, &ctrl, 1)) {
         return false;
     }
     ctrl |= CtrlArm;
     return FpgaLink::Write(Space::Regs, RegLpcCtrl, &ctrl, 1);
+}
+
+// ------------------------------------------------------------ trial boots
+// 06-boot-flow §7: a new Loader or System is armed with TRIAL and must confirm within
+// TrialConfirmUs of its boot starting, before any further reset. A Loader confirms on the
+// boot control port (TRIAL_CONFIRMED, which outlives the reset it then does), a System
+// with ConfirmBoot.
+constexpr int64_t TrialConfirmUs = 10 * 1000 * 1000;
+constexpr int TrialPollMs = 50;
+
+enum class Phase : uint8_t { None, Armed, Running };
+
+struct TrialState {
+    Phase Now;
+    int Entry;
+    uint8_t Bank;
+    uint8_t Resets;             // LPC_RESET_COUNT when the trial boot started
+    int64_t Start;
+} Tr;
+
+TaskHandle_t Watcher;
+
+void TrialArm(int id)
+{
+    Tr = {Phase::Armed, id, Cat.Entry[id].Bank, 0, 0};
+    ESP_LOGI(Tag, "entry %d armed on trial", id);
+    xTaskNotifyGive(Watcher);
+}
+
+// An armed trial that will never run: it stays an entry of its role, not current
+void TrialCancel()
+{
+    if (Tr.Now != Phase::Armed) {
+        return;
+    }
+    ESP_LOGI(Tag, "trial of entry %d cancelled", Tr.Entry);
+    Cat.Entry[Tr.Entry].Flags &= ~RomTrial;
+    Tr.Now = Phase::None;
+    Save();
+}
+
+void TrialPass()
+{
+    CatEntry &e = Cat.Entry[Tr.Entry];
+    ClearFlag(e.Kind, RomCurrent);
+    e.Flags = uint8_t((e.Flags & ~(RomTrial | RomFailedBoot)) | RomCurrent);
+    Tr.Now = Phase::None;
+    if (!Save()) {
+        ESP_LOGE(Tag, "trial of entry %d confirmed but not saved", Tr.Entry);
+        return;
+    }
+    Apply();
+    WriteFlags(false);
+    ESP_LOGI(Tag, "entry %d confirmed: now the current %s", Tr.Entry,
+             e.Kind == Role::Loader ? "Loader" : "System");
+}
+
+// The failure is recorded, LAST_FAILED tells the Loader, and the console is reset unless it
+// already has been: the one-shot arm is gone, so it comes back to the old image
+void TrialFail(const char *why, bool reset)
+{
+    CatEntry &e = Cat.Entry[Tr.Entry];
+    e.Flags = uint8_t((e.Flags & ~RomTrial) | RomFailedBoot);
+    Tr.Now = Phase::None;
+    ESP_LOGW(Tag, "trial of entry %d failed: %s", Tr.Entry, why);
+    Save();
+    WriteFlags(false, true);
+    if (reset && !Smbus::SmcPower(Smbus::Power::Reset)) {
+        Smbus::SmcPower(Smbus::Power::Cycle);
+    }
+}
+
+void TrialStep()
+{
+    // Nothing to watch while the config bus has the FPGA (and its registers start over)
+    if (CfgBus::Held() || !CfgBus::Cdone()) {
+        return;
+    }
+    Banks b;
+    uint8_t f;
+    if (!ReadBanks(b) || !ReadFlags(f)) {
+        return;
+    }
+    if (Tr.Now == Phase::Armed) {
+        if ((f & FlagTrial) && b.Active == Tr.Bank) {
+            Tr.Now = Phase::Running;
+            Tr.Resets = b.Resets;
+            Tr.Start = 0;
+        }
+        else if (!(b.Ctrl & CtrlArm)) {
+            TrialCancel();      // disarmed, or the reset served something else
+        }
+        return;
+    }
+    if (f & FlagTrialConfirmed) {
+        TrialPass();
+        return;
+    }
+    if (!Tr.Start) {
+        // Swapped in while the console was off or in reset: the time starts when it runs
+        if (b.Status & StatusLreset) {
+            Tr.Start = esp_timer_get_time();
+            ESP_LOGI(Tag, "trial boot of entry %d started", Tr.Entry);
+        }
+        else if (b.Resets == Tr.Resets) {
+            return;
+        }
+    }
+    else if (b.Resets != Tr.Resets) {
+        TrialFail("reset before confirming", false);
+    }
+    else if (esp_timer_get_time() - Tr.Start > TrialConfirmUs) {
+        TrialFail("not confirmed in time", true);
+    }
+}
+
+void WatchTask(void *)
+{
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, Tr.Now == Phase::None ? portMAX_DELAY
+                                                       : pdMS_TO_TICKS(TrialPollMs));
+        Guard g;
+        if (Tr.Now != Phase::None) {
+            TrialStep();
+        }
+    }
+}
+
+// After an ESP32 restart: carry on watching a trial the FPGA still has armed or running,
+// drop the trial flag from any other
+void TrialResume()
+{
+    Banks b;
+    uint8_t f;
+    const bool fpga = ReadBanks(b) && ReadFlags(f);
+    bool changed = false;
+    for (int i = 0; i < EntriesMax; i++) {
+        CatEntry &e = Cat.Entry[i];
+        if (!Valid(e) || !(e.Flags & RomTrial)) {
+            continue;
+        }
+        if (fpga && Tr.Now == Phase::None && (f & FlagTrial) && b.Active == e.Bank) {
+            Tr = {Phase::Running, i, e.Bank, b.Resets, 0};
+        }
+        else if (fpga && Tr.Now == Phase::None && (b.Ctrl & CtrlArm) && b.Pending == e.Bank &&
+                 (f & FlagTrialPending)) {
+            Tr = {Phase::Armed, i, e.Bank, 0, 0};
+        }
+        else {
+            e.Flags &= ~RomTrial;
+            changed = true;
+        }
+    }
+    if (changed) {
+        Save();
+    }
 }
 
 // ------------------------------------------------------------ helpers
@@ -562,8 +765,12 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
     }
     OxProg::UploadCommit c;
     Take(in, len, c);
-    if (c.Flags & CommitTrial) {
-        return Status::BadCommand;              // trial updates: 06-boot-flow §7, later
+    const bool trial = c.Flags & CommitTrial;
+    if (trial && Up.Kind != Role::Loader && Up.Kind != Role::System) {
+        return Status::BadCommand;
+    }
+    if (trial && Tr.Now != Phase::None) {
+        return Status::ProgrammerBusy;          // one trial at a time
     }
     if ((c.Flags & CommitUser) && Up.Kind != Role::User) {
         return Status::BadCommand;
@@ -583,8 +790,9 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
     if (id == NoEntry) {
         return Status::NoSpace;
     }
-    if (Up.Kind != Role::User) {
-        ClearFlag(Up.Kind, RomCurrent);         // straight to current (no trial)
+    const bool current = Up.Kind != Role::User && !trial;
+    if (current) {
+        ClearFlag(Up.Kind, RomCurrent);         // straight to current
     }
     if (c.Flags & CommitUser) {
         ClearFlag(Role::User, RomUser);
@@ -593,7 +801,7 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
     e = {};
     e.Kind = Up.Kind;
     e.Bank = Up.Bank;
-    e.Flags = uint8_t((Up.Kind != Role::User ? RomCurrent : 0) |
+    e.Flags = uint8_t((current ? RomCurrent : 0) | (trial ? RomTrial : 0) |
                       ((c.Flags & CommitUser) ? RomUser : 0));
     e.Size = Up.Size;
     e.Crc32 = crc;
@@ -605,7 +813,14 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
         return Status::FlashError;
     }
     Apply();
-    if ((c.Flags & CommitBoot) && !Arm(e.Bank)) {
+    if (trial) {
+        // A trial is always armed: it is current only once it has booted and confirmed
+        if (!Arm(e.Bank, true)) {
+            return Status::FlashError;
+        }
+        TrialArm(id);
+    }
+    else if ((c.Flags & CommitBoot) && !Arm(e.Bank)) {
         return Status::FlashError;
     }
     ToRomEntry(id, *reinterpret_cast<RomEntry *>(out));
@@ -656,8 +871,20 @@ Status Compact(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
 }
 
 // ------------------------------------------------------------ protocol
+void Start()
+{
+    Lock = xSemaphoreCreateRecursiveMutex();
+    xTaskCreate(WatchTask, "rom_trial", 4096, nullptr, 5, &Watcher);
+    Guard g;
+    Ensure();
+    if (Tr.Now != Phase::None) {
+        xTaskNotifyGive(Watcher);
+    }
+}
+
 Status Rom(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
 {
+    Guard g;
     const Status st = Ensure();
     if (st != Status::Ok) {
         return st;
@@ -692,6 +919,9 @@ Status Rom(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &
         CatEntry &e = Cat.Entry[r.Entry];
         if (e.Kind != Role::User && (e.Flags & RomCurrent)) {
             return Status::Protected;
+        }
+        if (Tr.Now != Phase::None && Tr.Entry == r.Entry) {
+            return Status::ProgrammerBusy;      // on trial
         }
         const CatEntry old = e;
         e.Bank = NoBank;
@@ -742,6 +972,7 @@ Status Rom(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &
 
 Status Upload(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
 {
+    Guard g;
     switch (UploadAction(action)) {
     case UploadAction::Begin:
         return UploadBegin(in, len);
@@ -759,6 +990,7 @@ Status Upload(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_
 
 Status Download(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
 {
+    Guard g;
     switch (DownloadAction(action)) {
     case DownloadAction::Begin: {
         DownloadBegin b;
@@ -826,6 +1058,7 @@ Status Download(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, siz
 
 Status Boot(const BootRequest &req)
 {
+    Guard g;
     const Status st = Ensure();
     if (st != Status::Ok) {
         return st;
@@ -842,8 +1075,30 @@ Status Boot(const BootRequest &req)
     return Status::Ok;
 }
 
+Status ConfirmBoot()
+{
+    Guard g;
+    if (Tr.Now == Phase::Armed) {
+        TrialStep();            // the boot may have started since the last poll
+    }
+    if (Tr.Now != Phase::Running) {
+        return Status::NotFound;
+    }
+    Banks b;
+    uint8_t f;
+    if (!ReadBanks(b) || !ReadFlags(f)) {
+        return Status::FlashError;
+    }
+    if (!(f & FlagTrial) || b.Active != Tr.Bank || b.Resets != Tr.Resets) {
+        return Status::NotFound;        // not the trial boot (the watcher will see why)
+    }
+    TrialPass();
+    return Status::Ok;
+}
+
 void FillInfo(Info &info)
 {
+    Guard g;
     if (Ensure() != Status::Ok) {
         return;
     }

@@ -119,8 +119,9 @@ Status Control(const Parser &in, Out &out)
         }
         return RomMgr::Boot(b);
     }
+    case ControlAction::ConfirmBoot:
+        return RomMgr::ConfirmBoot();
     default:
-        // ConfirmBoot comes with trial updates (06-boot-flow §7)
         return Status::BadCommand;
     }
 }

@@ -32,6 +32,8 @@ The Loader, System and Diag run on the Xbox CPU and reach the SMC through the MC
 
 At every `LRESET#` assertion: if armed, `ACTIVE_BANK ← PENDING_BANK`, `ARMED_BOOT` is set and `TRIAL ← TRIAL_PENDING`; otherwise `ACTIVE_BANK ← DEFAULT_BANK` and both clear. The arm, `TRIAL_PENDING` and `CONFIRMED` clear either way. A bank that crashes, FRAGs or reboots therefore never runs twice by accident: the reset after it lands on the Loader.
 
+While `LRESET#` is held low (console off, or in reset) an arm takes effect at once, the same way. Power-on brings no falling edge, so this is what makes an arm made with the console off apply to its next boot.
+
 The console arms through the boot control port (§4); the ESP32 through the link registers. Both set the same `PENDING_BANK`.
 
 ## 4. Boot control port (console side)
@@ -49,7 +51,7 @@ What the Loader uses: eight LPC I/O ports at `BOOTCTL_BASE` (default `0x00E0`, f
 | +6 | `DIAG_BANK` | — |
 | +7 | `ACTIVE_BANK` | — |
 
-`BOOT_FLAGS`: bit0 a bank is armed; bit1 `ARMED_BOOT` (this boot was armed); bit2 `TRIAL` (this boot must confirm); bit3 `LAST_FAILED` (the previous armed boot failed, set by the ESP32); bit4 `CONFIRMED` (this boot has confirmed); bit5 `TRIAL_PENDING` (the armed boot will be a trial).
+`BOOT_FLAGS`: bit0 a bank is armed; bit1 `ARMED_BOOT` (this boot was armed); bit2 `TRIAL` (this boot must confirm); bit3 `LAST_FAILED` (the previous armed boot failed, set by the ESP32); bit4 `CONFIRMED` (this boot has confirmed); bit5 `TRIAL_PENDING` (the armed boot will be a trial); bit6 `TRIAL_CONFIRMED` (a trial boot confirmed with `0xA5`; stays set across resets until the ESP32 clears it).
 
 Every value the Loader needs comes from the boot config record, so the Loader works before the ESP32 has started, or without one. System and other console software use the programmer protocol (07-console-protocol) instead, which goes through the ESP32: ROM library, choosing the power-button ROM, booting an entry, confirming, updates.
 
@@ -93,10 +95,12 @@ The one-shot arm has expired by then, so the console comes back to the Loader, w
 An update never overwrites the running image:
 
 1. `rom_mgr` writes the new image into the role's spare slot (A/B) and verifies it with the FPGA CRC engine.
-2. The ESP32 arms the new slot with `TRIAL` set and resets the console.
-3. The new image confirms once it is up. System: `ConfirmBoot` (07-console-protocol §3) after its UI has started. Loader: `0xA5` to port +3 before it resets into its target.
+2. The ESP32 arms the new slot with `TRIAL_PENDING` set. The trial starts at the next reset, or at once if the console is off or in reset (§3); the console can also be reset straight after the upload.
+3. The new image confirms once it is up. System: `ConfirmBoot` (07-console-protocol §3) after its UI has started. Loader: `0xA5` to port +3 before it resets into its target, which sets `TRIAL_CONFIRMED`.
 4. Confirmed → the ESP32 makes it current: for the Loader, a new boot config record with `DEFAULT_BANK` = the new slot; for System, the catalogue and `SYSTEM_BANK`. The old slot becomes the spare.
-5. Not confirmed within 10 s, or a failure per §6 → the update is marked failed; the next reset lands on the old image.
+5. Not confirmed within 10 s of `LRESET#` rising, or a reset before it confirms → the entry is marked failed-boot and the ESP32 sets `LAST_FAILED`. On a timeout the ESP32 also resets the console; the next boot lands on the old image.
+
+Only one trial runs at a time; another trial upload, or deleting the entry on trial, is refused with `ProgrammerBusy`. An arm for anything else cancels a trial that hasn't started. The trial state is kept in the catalogue, so an ESP32 restart picks it up again if the FPGA still shows it.
 
 `DEFAULT_BANK` only ever points at a confirmed Loader, and the Loader only sends eject to a confirmed System, so neither can be replaced by an untested image.
 

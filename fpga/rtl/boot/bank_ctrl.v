@@ -3,7 +3,10 @@
 //
 // At every LRESET# assertion: armed -> ACTIVE_BANK <= PENDING_BANK, ARMED_BOOT set,
 // TRIAL <= the pending trial; otherwise ACTIVE_BANK <= DEFAULT_BANK and both clear.
-// The arm, the pending trial and CONFIRMED clear either way.
+// The arm, the pending trial and CONFIRMED clear either way. While LRESET# is held low
+// (console off, or mid-reset) an arm takes effect at once, so it also covers power-on,
+// which brings no falling edge. TRIAL_CONFIRMED (a trial
+// boot confirmed) survives the reset until the ESP32 writes 0x3A with bit6 set.
 //
 // Link registers answered here (others read 0 with hit low):
 //   0x10-0x13 IRQ_STATUS (W1C) / IRQ_ENABLE   0x20 LPC_CTRL   0x22 ACTIVE_BANK
@@ -54,11 +57,13 @@ module bank_ctrl #(
     reg [7:0]  user_b   = NO_BANK, system_b = NO_BANK, diag_b = NO_BANK;
     reg        arm = 1'b0, trial_pend = 1'b0;
     reg        armed_boot = 1'b0, trial = 1'b0, last_failed = 1'b0, confirmed = 1'b0;
+    reg        trial_ok = 1'b0;
     reg [15:0] irq_status = 16'd0, irq_enable = 16'd0;
     reg [7:0]  base_lo = BOOTCTL_BASE_INIT[7:0];
     reg [23:0] last_addr = 24'd0;
 
-    wire [7:0] flags = {2'b00, trial_pend, confirmed, last_failed, trial, armed_boot, arm};
+    wire [7:0] flags = {1'b0, trial_ok, trial_pend, confirmed, last_failed, trial, armed_boot,
+                        arm};
     assign armed = arm;
     assign irq   = |(irq_status & irq_enable);
     assign port_vals = {active, diag_b, system_b, user_b, 8'h00,
@@ -73,6 +78,7 @@ module bank_ctrl #(
     reg       lreset_q = 1'b0;
     reg [2:0] cp_s = 3'd0;
     wire      lrst_fall = lreset_q && !lreset_n;
+    wire      lrst_held = !lreset_q && !lreset_n;
     wire      lrst_rise = !lreset_q && lreset_n;
     wire      cp_wr = cp_s[2] ^ cp_s[1];
 
@@ -105,6 +111,7 @@ module bank_ctrl #(
             16'h003A: begin
                 trial_pend  <= wdata[2];
                 last_failed <= wdata[3];
+                if (wdata[6]) trial_ok <= 1'b0;
             end
             16'h003B: user_b   <= wdata;
             16'h003C: system_b <= wdata;
@@ -120,7 +127,10 @@ module bank_ctrl #(
                     pending <= cp_data;
                     arm     <= valid_bank(cp_data);
                 end
-                3'd3: if (cp_data == 8'hA5) confirmed <= 1'b1;
+                3'd3: if (cp_data == 8'hA5) begin
+                    confirmed <= 1'b1;
+                    if (trial) trial_ok <= 1'b1;
+                end
                 default: ;
             endcase
             if (cp_off == 3'd2 || (cp_off == 3'd3 && cp_data == 8'hA5))
@@ -131,8 +141,8 @@ module bank_ctrl #(
             if (irq_set[i]) irq_status[i] <= 1'b1;
 
         // ---------------------------------------------------- reset: one-shot arm
-        if (lrst_fall) begin
-            irq_status[0] <= 1'b1;
+        if (lrst_fall || (lrst_held && arm)) begin
+            if (lrst_fall) irq_status[0] <= 1'b1;
             if (arm) begin
                 active     <= pending;
                 armed_boot <= 1'b1;

@@ -26,7 +26,7 @@
     py -3 tools/oxctl.py -p COM12 nor erase --addr A --len N
     py -3 tools/oxctl.py -p COM12 nor crc --addr A --len N
     py -3 tools/oxctl.py -p COM12 rom list                      # ROM library (docs/03 §5)
-    py -3 tools/oxctl.py -p COM12 rom upload FILE [--name N] [--type user|loader|system|diag] [--user] [--boot] [--compact]
+    py -3 tools/oxctl.py -p COM12 rom upload FILE [--name N] [--type user|loader|system|diag] [--user] [--boot] [--trial] [--reset] [--compact]
     py -3 tools/oxctl.py -p COM12 rom compact SIZE                # e.g. 1M: move entries to free a run
     py -3 tools/oxctl.py -p COM12 rom download ID|active OUT
     py -3 tools/oxctl.py -p COM12 rom delete|user ID
@@ -35,6 +35,7 @@
     py -3 tools/oxctl.py -p COM12 prog info                     # programmer protocol (docs/07)
     py -3 tools/oxctl.py -p COM12 prog smbus-read ADDR REG
     py -3 tools/oxctl.py -p COM12 prog smbus-write ADDR REG VALUE
+    py -3 tools/oxctl.py -p COM12 prog confirm                  # confirm the trial boot running now
 
 fpga id/read/write hold the FPGA in reset (CRESET low) for the duration: the Xbox
 loses its BIOS meanwhile, and iceprog must not be running.
@@ -249,7 +250,7 @@ PROG_STATUS = ["Ok", "ConsoleOn", "ProgrammerBusy", "LayoutInvalid", "NotStarted
                "BadOffset", "BadCommand", "FlashError", "CrcMismatch", "NotFound", "Protected",
                "NoSpace", "ConsoleOff", "SmbusError", "Fragmented"]
 MODE_CONTROL, MODE_UPLOAD, MODE_DOWNLOAD, MODE_ROM = 1, 2, 3, 4
-CTL_GET_INFO, CTL_REBOOT, CTL_SMBUS_READ, CTL_SMBUS_WRITE, CTL_BOOT = 0, 1, 2, 3, 4
+CTL_GET_INFO, CTL_REBOOT, CTL_SMBUS_READ, CTL_SMBUS_WRITE, CTL_BOOT, CTL_CONFIRM = 0, 1, 2, 3, 4, 5
 ROM_LIST, ROM_GET, ROM_DELETE, ROM_RENAME, ROM_SET_USER, ROM_COMPACT = 0, 1, 2, 3, 4, 5
 UP_BEGIN, UP_WRITE, UP_COMMIT, UP_ABORT = 0, 1, 2, 3
 DOWN_BEGIN, DOWN_READ, DOWN_END = 0, 1, 2
@@ -367,6 +368,9 @@ def cmd_prog(link, a):
             sys.exit("prog smbus-write: ADDR REG VALUE")
         prog(link, MODE_CONTROL, CTL_SMBUS_WRITE, bytes([a.args[0], a.args[1], a.args[2], 0]))
         print("ok")
+    elif a.what == "confirm":
+        prog(link, MODE_CONTROL, CTL_CONFIRM)
+        print("trial boot confirmed")
 
 
 def rom_entries(body):
@@ -400,7 +404,7 @@ def cmd_rom(link, a):
         need(1, "FILE [--name N] [--type T] [--user] [--boot]")
         data = open(args[0], "rb").read()
         name = (a.name or os.path.splitext(os.path.basename(args[0]))[0]).encode()[:32]
-        flags = (0x02 if a.user else 0) | (0x04 if a.boot else 0)
+        flags = (0x01 if a.trial else 0) | (0x02 if a.user else 0) | (0x04 if a.boot else 0)
         begin = struct.pack("<BBHI33s", UPLOAD_TYPES[a.type], 0, 0, len(data), name)
         try:
             prog(link, MODE_UPLOAD, UP_BEGIN, begin)
@@ -427,7 +431,11 @@ def cmd_rom(link, a):
                 pass
             raise
         e = ROM_ENTRY.unpack_from(body)
-        print(f"entry {e[0]}: slot {e[2] & 0x3F}, CRC {e[5]:08X}, {time.time() - t0:.1f} s")
+        print(f"entry {e[0]}: slot {e[2] & 0x3F}, CRC {e[5]:08X}, {time.time() - t0:.1f} s"
+              + (", armed on trial" if a.trial else ""))
+        if a.reset:
+            link.request(SMC_POWER, bytes([0x01]))
+            print("console reset")
     elif a.what == "download":
         need(2, "ID|active OUT")
         begin = bytes([2, 0]) if args[0] == "active" else bytes([1, int(args[0], 0)])
@@ -510,7 +518,7 @@ def main():
     s.add_argument("--addr", type=lambda x: int(x, 0), default=0)
     s.add_argument("--len", type=lambda x: int(x, 0), default=0)
     s = sub.add_parser("prog")
-    s.add_argument("what", choices=["info", "smbus-read", "smbus-write"])
+    s.add_argument("what", choices=["info", "smbus-read", "smbus-write", "confirm"])
     s.add_argument("args", nargs="*", type=lambda x: int(x, 0))
     s = sub.add_parser("rom")
     s.add_argument("what", choices=["list", "upload", "download", "delete", "rename", "user",
@@ -522,7 +530,9 @@ def main():
     s.add_argument("--boot", action="store_true", help="upload: boot it from the next reset")
     s.add_argument("--compact", action="store_true",
                    help="upload: move entries if there is room but no free run")
-    s.add_argument("--reset", action="store_true", help="boot: reset the console now")
+    s.add_argument("--trial", action="store_true",
+                   help="upload: a Loader or System, current only once it confirms")
+    s.add_argument("--reset", action="store_true", help="boot, upload: reset the console now")
     s = sub.add_parser("monitor")
     s.add_argument("--reset", action="store_true", help="reset the ESP32 after opening")
     a = p.parse_args()

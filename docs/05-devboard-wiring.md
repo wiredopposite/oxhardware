@@ -53,6 +53,8 @@ ESP32 strapping pins (IO0, IO2, IO5, IO12, IO15) are not used, so an unconfigure
 | LFRAME# sense | 23 | |
 | 3.3 V sense | 38 | 10 kΩ series, 100 kΩ to GND |
 | COM UART TX / RX | 2 / 46 | Debug Probe (kernel debugger) |
+| USB D+ / D− | 19 / 18 | 27 Ω each, to the console's USB port; `lpc_usb` only |
+| USB pull-up | 13 | 1.5 kΩ from pin 13 to D+ (driven high = attached) |
 | ESP32 UART0 | devkit USB | `oxctl`, 921600 |
 
 | Signal | Xbox LPC header | ESP32 devkit | Notes |
@@ -62,6 +64,6 @@ ESP32 strapping pins (IO0, IO2, IO5, IO12, IO15) are not used, so an unconfigure
 
 ## 5. Pins in use
 
-**UPduino**: 2, 4, 14–17 (flash), 20 (12 MHz), 23, 25, 26, 27, 31, 32, 34, 36, 37, 38, 39–41 (LED), 42, 43, 44, 45, 46, 47, 48. Pin 35 is unusable while the PLL runs. Free: 3, 6, 9, 10, 11, 12, 13, 18, 19, 21, 28.
+**UPduino**: 2, 4, 13, 14–17 (flash), 18, 19, 20 (12 MHz), 23, 25, 26, 27, 31, 32, 34, 36, 37, 38, 39–41 (LED), 42, 43, 44, 45, 46, 47, 48. Pin 35 is unusable while the PLL runs. Free: 3, 6, 9, 10, 11, 12, 21, 28.
 
 **ESP32 devkit**: IO1/IO3 (USB UART), 13, 19, 20, 21, 22, 25, 26, 27, 32, 33, 34, 35, 36. Free: 4, 7, 8, 14, 37, 38, 39 (and strapping pins 0, 2, 5, 12, 15 with care).

@@ -85,7 +85,7 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 | SPACE | Contents |
 |---|---|
 | 0 | Registers (§5), 8-bit, `A[15:0]` |
-| 1 | USB endpoint slot buffers: slot *k* at `k * 64` (k = 0..31), SETUP packets for device *d* at `0x800 + d*8` |
+| 1 | USB buffers and tables (§5.9) |
 | 2 | Reserved (the flash is read through the NOR engine, §5.5) |
 | 3 | FIFO ports (use `NOINC`): `0x00` COM (when routed to ESP32), `0x01` mailbox, `0x02` iotrap events (read-only, 4 bytes/event), `0x03` NOR buffer (256 B; every transaction starts at offset 0) |
 | 4–7 | Reserved |
@@ -215,43 +215,50 @@ Reserved.
 
 ### 5.9 USB device — `0x0200`
 
-Devices (logical USB devices sharing the port — composite = 1 device; hub emulation = hub + downstream), at `0x210 + 4d`, d = 0..3:
+One full-speed port carries up to 8 logical devices (hub emulation: the hub and the devices behind it, each at its own USB address; a composite device is one of them). There are 32 endpoint slots: slots 0–15 are IN, 16–31 OUT. Slot *d* and 16 + *d* are device *d*'s EP0 IN and OUT; the others are assigned through the endpoint map.
 
-| Offset | Name | Description |
-|---|---|---|
-| +0 | `DEV_CTRL` | bit0 enable; bit1 answers at address 0 (only one device should have this set at a time — the hub, or the downstream device whose port the host is resetting) |
-| +1 | `DEV_ADDR` | bits 6:0 address; bit7 `DEFER` (apply after the next EP0-IN ZLP of this device completes) |
+A token is resolved by table lookups: the **address map** (USB address → device), then the **endpoint map** ({device, endpoint, direction} → slot), then the slot's state. Slot state and the address map are owned by the USB engine. Slot commands, arms and address-map writes are queued and applied while no transaction is open, in the order written, so the effect of a write isn't visible on the bus at once (normally within one packet time).
 
-Global:
+Registers:
 
 | Addr | Name | Access | Description |
 |---|---|---|---|
-| 0x200 | `USB_CTRL` | RW | bit0 `PULLUP`; bit1 `SIE_EN`; bit2 `FORCE_RESUME` |
-| 0x202 | `USB_STATUS` | RO | bit0 bus reset (SE0); bit1 suspended |
-| 0x203–0x204 | `USB_FRAME` | RO | Last SOF frame number |
-| 0x205 | `USB_IRQ` | W1C | bit0 `BUS_RESET`, 1 `SETUP` (see `USB_SETUP_DEV`), 2 `IN_DONE`, 3 `OUT_DONE`, 4 `SUSPEND`, 5 `RESUME`, 6 `SOF` |
-| 0x206 | `USB_IRQ_EN` | RW | |
-| 0x207 | `USB_SETUP_DEV` | W1C | Bitmap: device *d* received a SETUP |
-| 0x208–0x20B | `USB_IN_DONE` | W1C | Bitmap by slot |
-| 0x20C–0x20F | `USB_OUT_DONE` | W1C | Bitmap by slot |
+| 0x200 | `USB_CTRL` | RW | bit0 `PULLUP` (attach), bit1 `SIE_EN` |
+| 0x201 | `USB_STATUS` | RO | bit0 bus reset (SE0 now), bit1 suspended, bits 3:2 line state {D+, D−} |
+| 0x202–0x203 | `USB_FRAME` | RO | Last SOF frame number (11 bits) |
+| 0x204 | `USB_IRQ` | W1C / RO | bit0 `BUS_RESET`, 1 `SUSPEND`, 2 `RESUME`, 3 `SOF` (W1C); bit5 any `SETUP_DEV`, 6 any `IN_DONE`, 7 any `OUT_DONE` (RO summaries) |
+| 0x205 | `USB_IRQ_EN` | RW | Same bits. An enabled event sets `IRQ_STATUS.USB`; STS bit4 is high while an enabled bit is |
+| 0x206 | `USB_SETUP_DEV` | W1C | Bit *d*: device *d* received a SETUP |
+| 0x208–0x209 | `USB_IN_DONE` | W1C | Bit *k*: IN slot *k* was sent and acknowledged |
+| 0x20A–0x20B | `USB_OUT_DONE` | W1C | Bit *k*: OUT slot 16 + *k* received a packet |
+| 0x210 | `MAP_ADDR` | WO | USB address for `MAP_DEV` |
+| 0x211 | `MAP_DEV` | WO | Queues address map [`MAP_ADDR`] = bit7 valid, bits 2:0 device |
+| 0x212 | `SETADDR_DEV` | WO | Device of a deferred SET_ADDRESS |
+| 0x213 | `SETADDR_ADDR` | WO | Its new address; writing it arms the deferral (below) |
+| 0x240 + *k* | `SLOT_CMD` | WO | Queues a command for slot *k* (0–31): bit0 enable, bit1 disable, bit2 stall, bit3 clear stall, bit4 toggle = DATA0, bit5 toggle = DATA1, bit6 IN: disarm / OUT: buffer free |
 
-Endpoint slots (k = 0..31; slot 2d and 2d+1 are reserved as device *d*'s EP0 IN/OUT), at `0x240 + 4k`:
+SPACE 1:
 
-| Offset | Name | Description |
+| Address | Access | Contents |
 |---|---|---|
-| +0 | `SLOT_CFG` | bit0 enable; bit1 STALL; bit2 direction (1 = IN); bits 4:3 type (0 ctrl, 2 bulk, 3 int); bits 6:5 device; bit7 data toggle (next IN / expected OUT; FPGA updates) |
-| +1 | `SLOT_EP` | bits 3:0 endpoint number |
-| +2 | `SLOT_LEN` | IN: write = arm with N bytes (0–64, 0 = ZLP). OUT: bytes received (RO) |
-| +3 | `SLOT_CMD` | IN: read bit0 armed. OUT: write 1 = buffer free, ACK next OUT |
+| 0x000–0x3FF | W | IN slot *k* data at *k* × 64 |
+| 0x400–0x7FF | R | OUT slot 16 + *k* data at 0x400 + *k* × 64 |
+| 0x800–0x83F | R | SETUP packet of device *d* at 0x800 + *d* × 8 |
+| 0x840–0x84F | R | Bytes received by OUT slot 16 + *k* at 0x840 + *k* |
+| 0xC00–0xCFF | W | Endpoint map [{device, endpoint, IN}] = bit7 valid, bits 3:0 slot within its half (index = device × 32 + endpoint × 2 + IN) |
+| 0xD00–0xD0F | W | Queues: arm IN slot *k* with N bytes (0–64) |
 
 Hardware behaviour the DCD relies on:
 
-- Token → find the enabled device whose address matches (or with "answers at 0" for address 0); no match → ignore silently (no handshake).
-- Then find the enabled slot with (device, EP number, direction); none → ignore (no handshake).
-- **SETUP always ACKed** into that device's SETUP buffer; clears its EP0 STALLs, disarms EP0 IN, sets EP0 toggles to 1, sets `USB_SETUP_DEV[d]`.
-- IN on unarmed slot → NAK. Armed → DATAx; ACK → flip toggle, disarm, `IN_DONE[k]`; no ACK → stay armed.
-- OUT with buffer busy → NAK; free → receive, CRC/toggle check (mismatch = ACK + drop), ACK, `OUT_DONE[k]`.
-- STALL bit → STALL. Bus reset → all devices address 0, non-EP0 slots disabled, buffers disarmed, `BUS_RESET`.
+- Token → address map. No valid entry → ignored, no handshake. Address 0 is an ordinary entry: map it to the hub, or to the device whose port the host is resetting.
+- EP0 needs no endpoint map entry. Other endpoints need a valid map entry and an enabled slot, else the token is ignored.
+- **SETUP** (exactly 8 bytes, DATA0) is always acknowledged into that device's SETUP buffer. It sets `SETUP_DEV[d]` and, for both of its EP0 slots, clears stall and armed/full and sets the toggle to DATA1.
+- IN: stalled → STALL; not armed → NAK; armed → DATAx. An ACK flips the toggle, disarms and sets `IN_DONE[k]`; no ACK leaves it armed for the retry.
+- OUT: stalled → STALL; buffer full → NAK; else receive and ACK. A toggle mismatch (the host resending after a lost ACK) is acknowledged and dropped. Otherwise the buffer becomes full, the toggle flips, the length is stored and `OUT_DONE[k]` is set; the DCD reads the data and then frees the buffer with `SLOT_CMD` bit6.
+- A packet with a bad CRC, a bit-stuff error or more than 64 bytes gets no handshake.
+- **Deferred SET_ADDRESS**: write `SETADDR_DEV`, then `SETADDR_ADDR`, then arm the status-stage ZLP on that device's EP0 IN. When the host acknowledges it, the address map gets [new address] = device. The old entry (e.g. address 0) stays until the DCD clears it.
+- Bus reset (SE0 for 4 µs or more) clears all slot state and the whole address map (in about 11 µs), and sets `BUS_RESET`. The endpoint map is kept.
+- Suspend: about 5 ms without bus activity sets `SUSPEND`; activity afterwards sets `RESUME`.
 
 ## 6. Boot config record (NOR)
 

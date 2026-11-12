@@ -5,7 +5,7 @@
 | Resource | UP5K | Planned use |
 |---|---|---|
 | LUT4 / FF | 5280 | ~4.0–4.6 k estimated (§10) — tight; features are build-time parameters |
-| EBR (512 B each) | 30 | USB slot buffers (4), COM FIFOs (2), mailbox (2), NOR prefetch + program buffer (2), shadow RAM + link FIFOs (2) |
+| EBR (512 B each) | 30 | USB buffers + tables (8), COM FIFOs (2), mailbox (2), NOR prefetch + program buffer (2), shadow RAM + link FIFOs (2) |
 | SPRAM (32 KB each) | 4 | 1 × iotrap event FIFO (8 K × 32 bit); others spare (possible ROM cache) |
 | PLL | 1 | 12 MHz → 48 MHz |
 | LFOSC | 10 kHz | Power-on timers, LCLK-present watchdog |
@@ -41,7 +41,7 @@ top_<board>.v              pins, SB_IO, SB_PLL40_PAD, SB_RGBA_DRV, SB_SPRAM256KA
     ├── mem/flash_emu.v           JEDEC command FSM on LPC memory writes
     ├── mem/crc32_engine.v
     ├── uart/uart_phy.v           8N1, RTS/CTS optional
-    ├── usb/{usb_phy_rx,usb_phy_tx,usb_sie,usb_slots}.v
+    ├── usb/{usb_phy_rx,usb_phy_tx,usb_sie,usb_core}.v
     └── led/status_led.v
 ```
 
@@ -192,20 +192,20 @@ Implements 01-interface §3. MISO tri-stated while `LINK_CS_N` high. `IRQ_N` pus
 ### 9.2 Architecture
 
 ```
- D+/D- ─► 4× oversample DPLL ─► NRZI dec ─► unstuff ─► packet rx (PID, CRC5/16)
-                                                          │
-                usb_sie: token → device match (addr table, "answers at 0") → slot match (dev, ep, dir) → handshake
-                                                          │
- D+/D- ◄─ NRZI enc ◄─ stuff ◄─ packet tx (SYNC, PID, data, CRC16, EOP)
-                                         ▲
-              usb_slots: 32 × 64 B EBR + per-slot {enable, stall, dir, type, dev, ep, toggle, armed, len}
+ D+/D- ─► sample (48 MHz, 4×) ─► NRZI dec ─► decide ─► unstuff, bytes, CRC5/16 ─► events ─┐
+                                                                                         │ toggle
+ usb_sie (24 MHz): token ─► address map ─► endpoint map ─► slot state + IN length ─► handshake
+                                                                                         │ toggle
+ D+/D- ◄─ NRZI enc ◄─ stuff ◄─ SYNC, PID, data, CRC16, EOP (48 MHz) ◄── bytes ───────────┘
 ```
 
-- PHY: 4× oversampling receiver and transmitter as above, 48 MHz. SIE: per-device address match, unaddressed tokens ignored, SET_ADDRESS applied after the status ZLP (the behaviour pico_usb's DCD interface expects).
-- Up to 4 logical devices (composite = 1; hub emulation = hub + up to 3 downstream, e.g. XID + XID + MSC, or Duke-like hub + XID + MU).
-- Turnaround: response within 2–7.5 bit times; handshake wait 16–18 bit times. ESP32 never in that loop.
-- Slot lookup: 32-entry parallel compare of `{dev, ep, dir}` (≈ 32 × 7-bit comparators) — register-file implementation, one cycle.
-- SOF frame number; suspend after 3 ms idle J.
+- **PHY** (`usb_phy_rx`, `usb_phy_tx`, 48 MHz): the receiver resynchronises on every transition and samples two clocks later. NRZI decode, a decision stage, then unstuffing, byte assembly and both CRCs serially. Counters are one-hot and the transmitter decides each bit boundary one clock early, to keep 48 MHz paths at one or two LUT levels. Events (packet start, byte, end with CRC flags) and transmit bytes cross to the SIE with toggles.
+- **SIE** (`usb_sie`, system clock): lookups instead of compares. Address map and slot state share one block RAM owned by the engine; the endpoint map and IN lengths are another, written by the link. The address map is read as soon as the token's address byte is in, so the handshake is ready when the EOP arrives. Measured turnaround 4.5 bit times (limit 7.5).
+- **Buffers**: IN 16 × 64 B (link writes, SIE reads); OUT 16 × 64 B + SETUP 8 × 8 B + lengths (SIE writes, link reads). One writer and one reader per RAM, so neither side waits.
+- **Queue**: slot commands, arms and address-map writes from the link go into a 256-entry queue that runs between transactions, so state never changes under an open transaction and slot state needs no flip-flops.
+- Up to 8 logical devices (e.g. a hub, a controller hub, four XIDs and a memory unit = 7); 32 slots (16 IN, 16 OUT).
+- SOF frame number; suspend after about 5 ms of idle J.
+- Testbench `sim/tb/tb_usb.v` (`make sim-usb`): a host model with its bit clock off by ±0.25 % drives control transfers, a deferred SET_ADDRESS, a second device at address 0, interrupt and bulk endpoints, NAK, STALL, toggles, retries, bad CRC, SOF and bus reset.
 
 ### 9.3 MSC bulk data
 
@@ -223,13 +223,15 @@ The SD card is on the ESP32 (00-system D8). MSC bulk data is ordinary slot traff
 | flash_emu | 250 | 0 | |
 | CRC | 120 | 0 | |
 | Link + regfile + CDC + boot_seq | 550 | 1 | |
-| USB PHY + SIE + 32 slots | 1500 | 4 | |
+| USB PHY + SIE + 32 slots (measured) | 850 (≈ 1.3 k LCs) | 8 | |
 | LED + misc | 100 | 0 | |
 | **Total** | **≈ 4.5 k (85 %)** | **12** | **1** |
 
 Still above a comfortable fill (~80 %) for nextpnr at 48 MHz.
 
-**Measured on the UPduino (lpc_probe, ~1.6 k LCs):** routing, not logic, dominates paths at 48 MHz on the UP5K — typical failing paths were 6–8 ns logic + 14–16 ns routing. Wide counter compares, 16:1 register muxes feeding an output, and multi-condition enables each failed 48 MHz until pipelined. Rules for every `clk_sys` module: flag counter terminal counts a cycle early; register mux outputs; decode events into registered one-hot flags; count up from zero; no wide magnitude compares. Budget the full design for ≤ ~75 % fill. Mitigations, in order: reduce USB slots to 16 (−300), merge mailbox into iotrap deferred mode (−100), drop Super I/O as a build option. No larger UP5K-pin-compatible part exists; if the mitigations aren't enough, see §10.1.
+**Measured (UPduino builds):** `lpc_com` (LPC target, COM + Super I/O, boot control, banks, mailbox, NOR engine, link) is 4181 LCs (79 %); the NOR engine alone is ~970 LUTs. Adding the USB core makes 5514 LCs (104 %), so the UP5K can't hold both. `lpc_usb` drops the mailbox and the NOR engine for USB bring-up: 3669 LCs (69 %), all clocks met (48 MHz domain 52 MHz).
+
+**Measured on the UPduino (lpc_probe, ~1.6 k LCs):** routing, not logic, dominates paths at 48 MHz on the UP5K — typical failing paths were 6–8 ns logic + 14–16 ns routing. Wide counter compares, 16:1 register muxes feeding an output, and multi-condition enables each failed 48 MHz until pipelined. Rules for every `clk_sys` module: flag counter terminal counts a cycle early; register mux outputs; decode events into registered one-hot flags; count up from zero; no wide magnitude compares. Budget the full design for ≤ ~75 % fill. Mitigations, in order: merge mailbox into iotrap deferred mode (−100), drop Super I/O as a build option. No larger UP5K-pin-compatible part exists; if the mitigations aren't enough, see §10.1.
 
 ### 10.1 Fallback FPGA options [OPEN]
 

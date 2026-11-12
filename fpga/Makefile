@@ -2,6 +2,7 @@
 #   make                         build DESIGN for BOARD (defaults: hello, upduino31)
 #   make DESIGN=lpc_probe prog   build and write to the board's config flash with iceprog
 #   make DESIGN=lpc_probe sim    run the design's iverilog testbench (sim/tb/tb_<design>.v)
+#   make sim-usb                 run the USB device testbench (sim/tb/tb_usb.v)
 #   make rom ROM=<file>          write a ROM image to flash offset ROM_OFFSET (default 0x40000)
 #   make clean
 #
@@ -15,12 +16,14 @@ BUILD  := build/$(BOARD)/$(DESIGN)
 PCF    := boards/$(BOARD)/$(BOARD).pcf
 
 UART_RTL := rtl/uart/uart_tx.v rtl/uart/uart_rx.v
+USB_RTL  := rtl/usb/usb_phy_rx.v rtl/usb/usb_phy_tx.v rtl/usb/usb_sie.v rtl/usb/usb_core.v
 
 RTL_hello     := $(UART_RTL)
 RTL_lpc_probe := $(UART_RTL) rtl/probe/lpc_sniff.v boards/$(BOARD)/$(BOARD)_clocks.v
 RTL_lpc_iolog := $(UART_RTL) rtl/probe/lpc_sniff.v rtl/common/spram64.v boards/$(BOARD)/$(BOARD)_clocks.v
 RTL_lpc_serve := $(UART_RTL) rtl/lpc/lpc_target.v rtl/mem/spi_stream.v rtl/common/word_report.v rtl/probe/trace_buf.v rtl/common/trace_dump.v boards/$(BOARD)/$(BOARD)_clocks.v
 RTL_lpc_com   := $(UART_RTL) rtl/lpc/lpc_target.v rtl/lpc/lreset_filter.v rtl/lpc/com16550.v rtl/lpc/superio_cfg.v rtl/common/async_fifo.v rtl/mem/spi_stream.v rtl/link/link_slave.v rtl/link/link_regs.v rtl/lpc/bootctl_port.v rtl/boot/bank_ctrl.v rtl/common/mbx_fifo.v rtl/lpc/mailbox.v rtl/mem/nor_ctrl.v boards/$(BOARD)/$(BOARD)_clocks.v
+RTL_lpc_usb   := $(UART_RTL) rtl/lpc/lpc_target.v rtl/lpc/lreset_filter.v rtl/lpc/com16550.v rtl/lpc/superio_cfg.v rtl/common/async_fifo.v rtl/mem/spi_stream.v rtl/link/link_slave.v rtl/link/link_regs.v rtl/lpc/bootctl_port.v rtl/boot/bank_ctrl.v $(USB_RTL) boards/$(BOARD)/$(BOARD)_clocks.v
 
 RTL := $(RTL_$(DESIGN)) boards/$(BOARD)/$(TOP).v
 
@@ -30,6 +33,7 @@ FREQ_lpc_probe := 24
 FREQ_lpc_iolog := 24
 FREQ_lpc_serve := 24
 FREQ_lpc_com   := 24
+FREQ_lpc_usb   := 24
 FREQ           := $(or $(FREQ_$(DESIGN)),48)
 CLKPY          := $(wildcard boards/$(BOARD)/$(DESIGN)_clocks.py)
 PNR_EXTRA      := $(if $(CLKPY),--pre-pack $(CLKPY))
@@ -70,7 +74,12 @@ sim: $(SIM_TB) $(filter-out boards/$(BOARD)/$(BOARD)_clocks.v,$(RTL))
 	iverilog -g2012 -o build/sim/tb_$(DESIGN).vvp $^
 	vvp -n build/sim/tb_$(DESIGN).vvp
 
+sim-usb: sim/tb/tb_usb.v $(USB_RTL)
+	python -c "import os; os.makedirs('build/sim', exist_ok=True)"
+	iverilog -g2012 -o build/sim/tb_usb.vvp $^
+	vvp -n build/sim/tb_usb.vvp
+
 clean:
 	python -c "import shutil; shutil.rmtree('build', ignore_errors=True)"
 
-.PHONY: all prog rom sim clean
+.PHONY: all prog rom sim sim-usb clean

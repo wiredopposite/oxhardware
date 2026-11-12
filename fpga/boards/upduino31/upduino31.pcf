@@ -27,6 +27,9 @@ set_io -nowarn link_mosi  45
 set_io -nowarn link_miso  47
 set_io -nowarn link_cs_n  48
 set_io -nowarn fpga_irq_n 4
+set_io -nowarn usb_pu  13
+set_io -nowarn usb_dp  19
+set_io -nowarn usb_dn  18
 
 # Xbox LPC, passive probe (left header, contiguous run 32..38, skipping 35). Inputs only.
 # Series resistors: 33-220 ohm on LCLK/LAD/LFRAME#/LRESET#; 3.3 V sense via 10 k series

@@ -88,7 +88,9 @@ Measured on a 1.6 console with a 256 K image:
 1. sets `LAST_FAILED` and records the bank in the catalogue (`FAILED_BOOT`);
 2. if the console is not already resetting by itself, resets it through the SMC (reset, then power cycle if the SMC doesn't respond).
 
-The one-shot arm has expired by then, so the console comes back to the Loader, which sends it to System (§5).
+The one-shot arm has expired by then, so the console comes back to the Loader, which sends it to System (§5). An arm the Loader has made again by the time `LAST_FAILED` is set is kept. A later good armed boot of the same entry clears its `FAILED_BOOT`.
+
+A trial boot is judged by §7 instead. A boot that was already running when the ESP32 started is not judged, since its start time isn't known; nor is anything while the config bus holds the FPGA.
 
 ## 7. Trial updates (Loader, System)
 

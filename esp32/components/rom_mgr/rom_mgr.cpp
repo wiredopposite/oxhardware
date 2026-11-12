@@ -1,5 +1,6 @@
 #include "rom_mgr.hpp"
 
+#include <cstdio>
 #include <cstring>
 
 #include "cfg_bus.hpp"
@@ -217,6 +218,7 @@ uint32_t Slots(const CatEntry &e) { return e.Size / SlotSize; }
 constexpr uint16_t RegLpcCtrl = 0x0020;
 constexpr uint16_t RegPending = 0x0023;
 constexpr uint16_t RegDefault = 0x0027;
+constexpr uint16_t RegReadCount = 0x002C;  // memory reads served since LRESET# last fell
 constexpr uint16_t RegBootFlags = 0x003A;
 constexpr uint16_t RegUserBank = 0x003B;   // USER_BANK, SYSTEM_BANK, DIAG_BANK
 constexpr uint8_t CtrlArm = 0x08;
@@ -225,6 +227,7 @@ constexpr uint8_t StatusLreset = 0x01;     // LRESET# high: the console is runni
 
 // BOOT_FLAGS (06-boot-flow §4). Writes set TRIAL_PENDING from bit2 and LAST_FAILED from
 // bit3; bit6 set clears TRIAL_CONFIRMED.
+constexpr uint8_t FlagArmedBoot = 0x02;
 constexpr uint8_t FlagTrial = 0x04;
 constexpr uint8_t FlagLastFailed = 0x08;
 constexpr uint8_t FlagTrialPending = 0x20;
@@ -456,7 +459,6 @@ bool Arm(uint8_t bank, bool trial = false)
 // boot control port (TRIAL_CONFIRMED, which outlives the reset it then does), a System
 // with ConfirmBoot.
 constexpr int64_t TrialConfirmUs = 10 * 1000 * 1000;
-constexpr int TrialPollMs = 50;
 
 enum class Phase : uint8_t { None, Armed, Running };
 
@@ -507,6 +509,13 @@ void TrialPass()
 
 // The failure is recorded, LAST_FAILED tells the Loader, and the console is reset unless it
 // already has been: the one-shot arm is gone, so it comes back to the old image
+void ResetConsole()
+{
+    if (!Smbus::SmcPower(Smbus::Power::Reset)) {
+        Smbus::SmcPower(Smbus::Power::Cycle);
+    }
+}
+
 void TrialFail(const char *why, bool reset)
 {
     CatEntry &e = Cat.Entry[Tr.Entry];
@@ -515,8 +524,8 @@ void TrialFail(const char *why, bool reset)
     ESP_LOGW(Tag, "trial of entry %d failed: %s", Tr.Entry, why);
     Save();
     WriteFlags(false, true);
-    if (reset && !Smbus::SmcPower(Smbus::Power::Reset)) {
-        Smbus::SmcPower(Smbus::Power::Cycle);
+    if (reset) {
+        ResetConsole();
     }
 }
 
@@ -564,15 +573,122 @@ void TrialStep()
     }
 }
 
+// ------------------------------------------------------------ failed-boot detection
+// 06-boot-flow §6. Every armed boot other than a trial is judged from LRESET# and the reads
+// served: a good boot reads its image within about half a second and keeps running; a bad
+// one stops after a few K reads and the SMC resets it again and again, then FRAGs.
+constexpr int64_t BootResetUs = 3 * 1000 * 1000;   // a reset sooner than this: failed
+constexpr int64_t BootReadsUs = 2 * 1000 * 1000;   // reads counted this long after it starts
+constexpr uint32_t BootReadsMin = 64 * 1024;
+
+struct BootWatch {
+    bool Known;                 // Seen holds the reset count of the boot last looked at
+    uint8_t Seen;
+    bool On;
+    bool ReadsOk;
+    uint8_t Bank;
+    int64_t Start;
+} Bw;
+
+void BootMark(bool failed)
+{
+    const int id = FindBank(Bw.Bank);
+    if (id == NoEntry) {
+        return;
+    }
+    CatEntry &e = Cat.Entry[id];
+    const uint8_t flags = uint8_t(failed ? e.Flags | RomFailedBoot : e.Flags & ~RomFailedBoot);
+    if (flags != e.Flags) {
+        e.Flags = flags;
+        Save();
+    }
+}
+
+// LAST_FAILED tells the Loader; an arm or trial it has made since is kept
+void BootFail(const char *why, bool reset)
+{
+    Bw.On = false;
+    ESP_LOGW(Tag, "armed boot of slot %u failed: %s", BankSlot(Bw.Bank), why);
+    uint8_t f;
+    if (ReadFlags(f)) {
+        const uint8_t w = uint8_t(FlagLastFailed | ((f & FlagTrialPending) ? FlagTrial : 0));
+        FpgaLink::Write(Space::Regs, RegBootFlags, &w, 1);
+    }
+    BootMark(true);
+    if (reset) {
+        ResetConsole();
+    }
+}
+
+void BootStep()
+{
+    if (CfgBus::Held() || !CfgBus::Cdone()) {
+        Bw = {};                // the FPGA starts over: so does what it counted
+        return;
+    }
+    Banks b;
+    uint8_t f;
+    uint8_t rc[4];
+    if (!ReadBanks(b) || !ReadFlags(f) ||
+        !FpgaLink::Read(Space::Regs, RegReadCount, rc, sizeof(rc))) {
+        return;
+    }
+    if (!Bw.Known) {            // a boot already running when we started: not judged
+        Bw.Known = true;
+        Bw.Seen = b.Resets;
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (Bw.On) {
+        if (b.Resets != Bw.Seen) {
+            if (now - Bw.Start < BootResetUs) {
+                BootFail("reset again", false);
+                return;
+            }
+            Bw.On = false;
+        }
+        else if (!Bw.ReadsOk && now - Bw.Start >= BootReadsUs) {
+            const uint32_t reads = rc[0] | rc[1] << 8 | rc[2] << 16 | uint32_t(rc[3]) << 24;
+            if (reads < BootReadsMin) {
+                char why[40];
+                snprintf(why, sizeof(why), "%lu reads", (unsigned long)reads);
+                BootFail(why, true);
+                return;
+            }
+            Bw.ReadsOk = true;
+        }
+        else if (Bw.ReadsOk && now - Bw.Start >= BootResetUs) {
+            Bw.On = false;
+            BootMark(false);
+            ESP_LOGI(Tag, "armed boot of slot %u is up", BankSlot(Bw.Bank));
+        }
+        if (Bw.On) {
+            return;
+        }
+    }
+    // A new boot: LRESET# has fallen and risen again since the last one looked at
+    if (b.Resets != Bw.Seen && (b.Status & StatusLreset)) {
+        Bw.Seen = b.Resets;
+        if ((f & FlagArmedBoot) && !(f & FlagTrial)) {
+            Bw.On = true;
+            Bw.ReadsOk = false;
+            Bw.Bank = b.Active;
+            Bw.Start = now;
+        }
+    }
+}
+
+constexpr int WatchPollMs = 50;
+
 void WatchTask(void *)
 {
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, Tr.Now == Phase::None ? portMAX_DELAY
-                                                       : pdMS_TO_TICKS(TrialPollMs));
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(WatchPollMs));
         Guard g;
         if (Tr.Now != Phase::None) {
             TrialStep();
         }
+        BootStep();
     }
 }
 
@@ -910,7 +1026,7 @@ Status Compact(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
 void Start()
 {
     Lock = xSemaphoreCreateRecursiveMutex();
-    xTaskCreate(WatchTask, "rom_trial", 4096, nullptr, 5, &Watcher);
+    xTaskCreate(WatchTask, "rom_watch", 4096, nullptr, 5, &Watcher);
     Guard g;
     Ensure();
     if (Tr.Now != Phase::None) {

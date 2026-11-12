@@ -1,6 +1,7 @@
 #include "cfg_bus.hpp"
 #include "esp_log.h"
 #include "fpga_link.hpp"
+#include "fpga_svc.hpp"
 #include "host_link.hpp"
 #include "nor.hpp"
 #include "prog_server.hpp"
@@ -18,6 +19,7 @@ extern "C" void app_main(void)
     CfgBus::RegisterCommands();
     FpgaLink::Init();
     FpgaLink::RegisterCommands();
+    FpgaSvc::Start();
     Nor::Init();
     Nor::RegisterCommands();
     Smbus::Init();

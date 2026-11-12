@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "prog_server.cpp" "mailbox.cpp" "prog_cmds.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES oxprog fpga_link smbus host_link rom_mgr esp_app_format esp_system
+    REQUIRES oxprog fpga_link fpga_svc smbus host_link rom_mgr esp_app_format esp_system
 )

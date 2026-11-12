@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "fpga_link.hpp"
+#include "fpga_svc.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -622,8 +623,12 @@ void BootFail(const char *why, bool reset)
 
 void BootStep()
 {
-    if (CfgBus::Held() || !CfgBus::Cdone()) {
+    if (CfgBus::Held()) {
         Bw = {};                // the FPGA starts over: so does what it counted
+        return;
+    }
+    // A single low CDONE read is not trusted: it is only a pass skipped
+    if (!CfgBus::Cdone()) {
         return;
     }
     Banks b;
@@ -674,16 +679,21 @@ void BootStep()
             Bw.ReadsOk = false;
             Bw.Bank = b.Active;
             Bw.Start = now;
+            ESP_LOGI(Tag, "armed boot of slot %u started", BankSlot(Bw.Bank));
         }
     }
 }
 
+// Polled while a trial or an armed boot is being timed; otherwise the LRESET# and boot
+// control interrupts wake the task, with the idle period as a fallback
 constexpr int WatchPollMs = 50;
+constexpr int WatchIdleMs = 1000;
 
 void WatchTask(void *)
 {
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(WatchPollMs));
+        const bool busy = Tr.Now != Phase::None || Bw.On;
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(busy ? WatchPollMs : WatchIdleMs));
         Guard g;
         if (Tr.Now != Phase::None) {
             TrialStep();
@@ -1027,6 +1037,9 @@ void Start()
 {
     Lock = xSemaphoreCreateRecursiveMutex();
     xTaskCreate(WatchTask, "rom_watch", 4096, nullptr, 5, &Watcher);
+    FpgaSvc::Notify(FpgaSvc::Irq::LrstAssert | FpgaSvc::Irq::LrstDeassert |
+                        FpgaSvc::Irq::BootCtl,
+                    Watcher);
     Guard g;
     Ensure();
     if (Tr.Now != Phase::None) {

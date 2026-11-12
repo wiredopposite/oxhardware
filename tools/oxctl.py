@@ -20,6 +20,7 @@
     py -3 tools/oxctl.py -p COM12 link test [--count N] [--mhz F]         # scratch register stress
     py -3 tools/oxctl.py -p COM12 link read ADDR [--len N] [--space S]
     py -3 tools/oxctl.py -p COM12 link write ADDR HEXBYTES [--space S]
+    py -3 tools/oxctl.py -p COM12 link irq                     # FPGA interrupts taken, by bit
     py -3 tools/oxctl.py -p COM12 nor info                      # flash through the running FPGA
     py -3 tools/oxctl.py -p COM12 nor read OUT --addr A --len N
     py -3 tools/oxctl.py -p COM12 nor write FILE --addr A       # erase, program, verify
@@ -58,7 +59,9 @@ LOG_LEVEL = 0x0100
 FPGA_INFO, FPGA_HOLD, FPGA_RELEASE = 0x0200, 0x0201, 0x0202
 FLASH_ID, FLASH_READ, FLASH_ERASE, FLASH_WRITE, FLASH_CRC = 0x0203, 0x0204, 0x0205, 0x0206, 0x0207
 FLASH_PROBE = 0x0208
-LINK_READ, LINK_WRITE, LINK_PROBE, LINK_CLOCK = 0x0300, 0x0301, 0x0302, 0x0303
+LINK_READ, LINK_WRITE, LINK_PROBE, LINK_CLOCK, LINK_IRQ = 0x0300, 0x0301, 0x0302, 0x0303, 0x0304
+IRQ_BITS = ["LRST_ASSERT", "LRST_DEASSERT", "BANK_SWAPPED", "USB", "IOTRAP", "MBX_RX", "COM_RX",
+            "ERROR", "CRC_DONE", "NOR_DONE", "FLASHEMU", "BOOTCTL"]
 SMBUS_READ, SMBUS_WRITE, SMC_POWER = 0x0400, 0x0401, 0x0402
 PROG_XFER = 0x0500
 NOR_INFO, NOR_READ, NOR_ERASE, NOR_WRITE, NOR_CRC = 0x0600, 0x0601, 0x0602, 0x0603, 0x0604
@@ -194,6 +197,12 @@ def cmd_link(link, a):
         if not a.data:
             sys.exit("link write: data required")
         print(sts_text(link_write(link, a.addr, bytes.fromhex(a.data), a.space)))
+    elif a.what == "irq":
+        v = struct.unpack("<18I", link.request(LINK_IRQ))
+        print(f"interrupts {v[0]}, spurious {v[1]}")
+        for i, name in enumerate(IRQ_BITS):
+            if v[2 + i]:
+                print(f"  {name:14} {v[2 + i]}")
     elif a.what == "probe":
         r = link.request(LINK_PROBE)
         lv = r[0]
@@ -506,7 +515,7 @@ def main():
     s = sub.add_parser("xbox")
     s.add_argument("what", choices=["status", "reset", "cycle", "off"])
     s = sub.add_parser("link")
-    s.add_argument("what", choices=["info", "probe", "test", "read", "write"])
+    s.add_argument("what", choices=["info", "probe", "test", "read", "write", "irq"])
     s.add_argument("addr", nargs="?", type=lambda x: int(x, 0), default=0)
     s.add_argument("data", nargs="?")
     s.add_argument("--len", type=lambda x: int(x, 0), default=0)

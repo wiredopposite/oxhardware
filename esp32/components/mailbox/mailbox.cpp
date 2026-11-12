@@ -5,6 +5,7 @@
 
 #include "esp_log.h"
 #include "fpga_link.hpp"
+#include "fpga_svc.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "prog_server.hpp"
@@ -23,6 +24,8 @@ constexpr uint8_t CtrlEnable = 0x01;
 constexpr uint8_t CtrlResetReq = 0x02;
 constexpr uint8_t CtrlReady = 0x04;
 constexpr TickType_t SendTimeout = pdMS_TO_TICKS(2000);
+// MBX_RX wakes the task; this is only the fallback if no interrupt comes
+constexpr TickType_t IdleCheck = pdMS_TO_TICKS(100);
 
 Parser In;
 Packet Reply;
@@ -104,7 +107,7 @@ void Task(void *)
             continue;
         }
         if (!s.RxLevel) {
-            vTaskDelay(1);
+            ulTaskNotifyTake(pdTRUE, IdleCheck);    // MBX_RX: data into an empty FIFO
             continue;
         }
         const size_t n = s.RxLevel < sizeof(Rx) ? s.RxLevel : sizeof(Rx);
@@ -129,7 +132,9 @@ void Task(void *)
 
 void StartMailbox()
 {
-    xTaskCreate(Task, "mailbox", 4096, nullptr, 5, nullptr);
+    TaskHandle_t task;
+    xTaskCreate(Task, "mailbox", 4096, nullptr, 5, &task);
+    FpgaSvc::Notify(FpgaSvc::Irq::MbxRx, task);
 }
 
 }

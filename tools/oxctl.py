@@ -431,7 +431,8 @@ def cmd_rom(link, a):
                 pass
             raise
         e = ROM_ENTRY.unpack_from(body)
-        print(f"entry {e[0]}: slot {e[2] & 0x3F}, CRC {e[5]:08X}, {time.time() - t0:.1f} s"
+        print(f"entry {e[0]}: slot {e[2] & 0x3F}, {e[4] // 1024} K, CRC {e[5]:08X}, "
+              f"{time.time() - t0:.1f} s"
               + (", armed on trial" if a.trial else ""))
         if a.reset:
             link.request(SMC_POWER, bytes([0x01]))

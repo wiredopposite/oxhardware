@@ -758,6 +758,33 @@ Status UploadWrite(const uint8_t *in, size_t len)
     return Status::Ok;
 }
 
+// The smallest size the image repeats at (256 or 512 K), comparing CRCs of its pieces. The
+// FPGA mirrors a smaller bank through the 1 MB window, so the console reads the same bytes.
+bool MirrorSize(uint32_t addr, uint32_t size, uint32_t &out, uint32_t &crc)
+{
+    out = size;
+    for (uint32_t n = SlotSize; n < size; n *= 2) {
+        uint32_t first;
+        if (!Nor::Crc32(addr, n, &first)) {
+            return false;
+        }
+        bool same = true;
+        for (uint32_t off = n; same && off < size; off += n) {
+            uint32_t c;
+            if (!Nor::Crc32(addr + off, n, &c)) {
+                return false;
+            }
+            same = c == first;
+        }
+        if (same) {
+            out = n;
+            crc = first;
+            return true;
+        }
+    }
+    return true;
+}
+
 Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
 {
     if (!UploadLive()) {
@@ -785,6 +812,15 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
         ESP_LOGW(Tag, "upload CRC %08lX, expected %08lX", (unsigned long)crc,
                  (unsigned long)c.Crc32);
         return Status::CrcMismatch;
+    }
+    uint32_t size;
+    if (!MirrorSize(BankAddr(Up.Bank), Up.Size, size, crc)) {
+        return Status::FlashError;
+    }
+    if (size != Up.Size) {
+        ESP_LOGI(Tag, "image repeats every %lu K, stored as that", (unsigned long)(size / 1024));
+        Up.Bank = MakeBank(BankSlot(Up.Bank), size);    // the rest of its slots are free again
+        Up.Size = size;
     }
     const int id = FreeEntry();
     if (id == NoEntry) {

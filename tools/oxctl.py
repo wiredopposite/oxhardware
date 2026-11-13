@@ -40,7 +40,7 @@
     py -3 tools/oxctl.py -p COM12 usb start [pad|hub|xbox]|stop|status  # USB device
     py -3 tools/oxctl.py -p COM12 usb plug|unplug        # hub profiles: gamepad on port 1
     py -3 tools/oxctl.py -p COM12 usb pad a start --lx 20000  # xbox profile: hold buttons
-    py -3 tools/oxctl.py -p COM12 bt status|pair on|pair off  # Bluetooth controllers
+    py -3 tools/oxctl.py -p COM12 bt status|pair on|off|config on|off  # Bluetooth
 
 fpga id/read/write hold the FPGA in reset (CRESET low) for the duration: the Xbox
 loses its BIOS meanwhile, and iceprog must not be running.
@@ -71,7 +71,7 @@ PROG_XFER = 0x0500
 NOR_INFO, NOR_READ, NOR_ERASE, NOR_WRITE, NOR_CRC = 0x0600, 0x0601, 0x0602, 0x0603, 0x0604
 USB_START, USB_STOP, USB_STATUS, USB_PLUG, USB_PAD = 0x0700, 0x0701, 0x0702, 0x0703, 0x0704
 USB_PROFILES = {"pad": 0, "hub": 1, "xbox": 2}
-BT_STATUS, BT_PAIR = 0x0800, 0x0801
+BT_STATUS, BT_PAIR, BT_CONFIG = 0x0800, 0x0801, 0x0802
 XID_DIGITAL = ["up", "down", "left", "right", "start", "back", "ls", "rs"]
 XID_ANALOG = ["a", "b", "x", "y", "black", "white", "lt", "rt"]
 USB_STATES = ["disabled", "default", "addressed", "configured"]
@@ -278,17 +278,18 @@ def cmd_usb(link, a):
 
 
 def cmd_bt(link, a):
-    if a.what == "pair":
+    if a.what in ("pair", "config"):
         if a.state not in ("on", "off"):
-            sys.exit("bt pair: on or off")
-        link.request(BT_PAIR, bytes([a.state == "on"]))
-        print(f"pairing {a.state}")
+            sys.exit(f"bt {a.what}: on or off")
+        link.request(BT_PAIR if a.what == "pair" else BT_CONFIG, bytes([a.state == "on"]))
+        print(f"{'pairing' if a.what == 'pair' else 'BLE config page'} {a.state}")
     else:
         r = link.request(BT_STATUS)
         if not r[0]:
             print("Bluetooth not started")
         else:
-            print(f"pairing {'on' if r[1] else 'off'}, {r[2]} controller(s) connected")
+            print(f"pairing {'on' if r[1] else 'off'}, {r[2]} controller(s) connected"
+                  + (f", BLE config page {'on' if r[3] else 'off'}" if len(r) > 3 else ""))
 
 
 def smb_read(link, addr, reg, width=1):
@@ -619,8 +620,8 @@ def main():
     for axis in ("lx", "ly", "rx", "ry"):
         s.add_argument(f"--{axis}", type=int, default=0, help="pad: stick axis, -32768..32767")
     s = sub.add_parser("bt")
-    s.add_argument("what", choices=["status", "pair"])
-    s.add_argument("state", nargs="?", help="pair: on or off")
+    s.add_argument("what", choices=["status", "pair", "config"])
+    s.add_argument("state", nargs="?", help="pair, config: on or off")
     s = sub.add_parser("monitor")
     s.add_argument("--reset", action="store_true", help="reset the ESP32 after opening")
     a = p.parse_args()

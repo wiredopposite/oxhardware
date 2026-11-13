@@ -15,6 +15,10 @@ extern "C" {
 // if there was anything (call usbd_task() and poll again).
 bool dcd_fpga_poll(void);
 
+// Takes a device off the bus (unplugged from the hub): it loses its address, its
+// endpoints close and its queued events go. It answers again after its port is reset.
+void dcd_fpga_detach(uint8_t dport);
+
 // Events still queued for usbd_task() (a SETUP held back behind an earlier completion)
 bool dcd_fpga_pending(void);
 

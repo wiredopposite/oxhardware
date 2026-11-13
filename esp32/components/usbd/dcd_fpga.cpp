@@ -556,6 +556,25 @@ bool dcd_fpga_poll(void)
     return true;
 }
 
+void dcd_fpga_detach(uint8_t dport)
+{
+    if (dport >= USBD_DEVICES_MAX) {
+        return;
+    }
+    for (uint8_t s = 0; s < 32; s++) {
+        if (Slots[s].used && Slots[s].dev == dport) {
+            EpClose(dport, Slots[s].epaddr);
+        }
+    }
+    Unmap(dport);
+    Device &d = Devs[dport];
+    d.reset_pending = false;
+    d.events = 0;
+    d.eps = 0;
+    d.setup = false;
+    d.hold = false;
+}
+
 bool dcd_fpga_pending(void)
 {
     for (const Device &d : Devs) {

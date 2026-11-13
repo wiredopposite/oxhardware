@@ -37,7 +37,8 @@
     py -3 tools/oxctl.py -p COM12 prog smbus-read ADDR REG
     py -3 tools/oxctl.py -p COM12 prog smbus-write ADDR REG VALUE
     py -3 tools/oxctl.py -p COM12 prog confirm                  # confirm the trial boot running now
-    py -3 tools/oxctl.py -p COM12 usb start|stop|status         # USB device (test gamepad)
+    py -3 tools/oxctl.py -p COM12 usb start [pad|hub]|stop|status  # USB device (test gamepad)
+    py -3 tools/oxctl.py -p COM12 usb plug|unplug        # hub profile: gamepad on port 1
 
 fpga id/read/write hold the FPGA in reset (CRESET low) for the duration: the Xbox
 loses its BIOS meanwhile, and iceprog must not be running.
@@ -66,7 +67,7 @@ IRQ_BITS = ["LRST_ASSERT", "LRST_DEASSERT", "BANK_SWAPPED", "USB", "IOTRAP", "MB
 SMBUS_READ, SMBUS_WRITE, SMC_POWER = 0x0400, 0x0401, 0x0402
 PROG_XFER = 0x0500
 NOR_INFO, NOR_READ, NOR_ERASE, NOR_WRITE, NOR_CRC = 0x0600, 0x0601, 0x0602, 0x0603, 0x0604
-USB_START, USB_STOP, USB_STATUS = 0x0700, 0x0701, 0x0702
+USB_START, USB_STOP, USB_STATUS, USB_PLUG = 0x0700, 0x0701, 0x0702, 0x0703
 USB_STATES = ["disabled", "default", "addressed", "configured"]
 SMC = 0x10
 
@@ -228,17 +229,22 @@ def cmd_link(link, a):
 
 def cmd_usb(link, a):
     if a.what == "start":
-        link.request(USB_START, bytes([0]))
-        print("started: test gamepad, attached")
+        hub = a.profile == "hub"
+        link.request(USB_START, bytes([1 if hub else 0]))
+        print("started: " + ("hub, test gamepad on port 1" if hub else "test gamepad") + ", attached")
     elif a.what == "stop":
         link.request(USB_STOP)
         print("stopped, detached")
+    elif a.what in ("plug", "unplug"):
+        link.request(USB_PLUG, bytes([a.what == "plug"]))
+        print(f"test gamepad {a.what}ged, hub port 1")
     else:
         r = link.request(USB_STATUS)
         running, state = r[0], r[1]
         v = struct.unpack_from("<9I", r, 2)
         addr = r[38:46]
-        print(f"{'running' if running else 'stopped'}, device {USB_STATES[state] if state < 4 else state}")
+        print(f"{'running' if running else 'stopped'}, gamepad {USB_STATES[state] if state < 4 else state}"
+              + (f", hub {USB_STATES[r[46]] if r[46] < 4 else r[46]}" if len(r) > 46 and r[46] != 0xFF else ""))
         print(f"reports taken {v[0]}, OUT packets {v[1]}")
         print(f"events {v[2]}: bus resets {v[3]}, SETUPs {v[4]}, IN done {v[5]}, OUT done {v[6]}, "
               f"suspends {v[7]}, link errors {v[8]}")
@@ -567,7 +573,9 @@ def main():
                    help="upload: a Loader or System, current only once it confirms")
     s.add_argument("--reset", action="store_true", help="boot, upload: reset the console now")
     s = sub.add_parser("usb")
-    s.add_argument("what", choices=["start", "stop", "status"])
+    s.add_argument("what", choices=["start", "stop", "status", "plug", "unplug"])
+    s.add_argument("profile", nargs="?", choices=["pad", "hub"], default="pad",
+                   help="start: the test gamepad alone, or behind a 4-port hub")
     s = sub.add_parser("monitor")
     s.add_argument("--reset", action="store_true", help="reset the ESP32 after opening")
     a = p.parse_args()

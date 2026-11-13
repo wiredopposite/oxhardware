@@ -34,6 +34,25 @@ constexpr uint8_t StatusBusy = 0x01;
 
 spi_device_handle_t Dev;
 bool IsHeld = false, IsTaken = false;
+ResetHandler BeforeReset, AfterReset;
+
+// Around every CRESET_B low: the FPGA's pins float (with weak pull-ups) until it is
+// configured again, so whatever it drives towards the console must let go cleanly first
+void ResetStart()
+{
+    if (const ResetHandler h = BeforeReset) {
+        h();
+    }
+    gpio_set_level(Pins::FpgaCreset, 0);
+}
+
+void ResetEnd()
+{
+    gpio_set_level(Pins::FpgaCreset, 1);
+    if (const ResetHandler h = AfterReset) {
+        h();
+    }
+}
 // CPU transfers only (no DMA): freeing a DMA-enabled bus on release disturbs the link's
 // DMA channel. The hardware buffer holds 64 bytes, so longer transfers are chunked with
 // CS# held low.
@@ -179,6 +198,12 @@ bool Cdone()
     return gpio_get_level(Pins::FpgaCdone);
 }
 
+void OnReset(ResetHandler before, ResetHandler after)
+{
+    BeforeReset = before;
+    AfterReset = after;
+}
+
 bool Held()
 {
     return IsHeld;
@@ -192,10 +217,10 @@ bool Hold()
     if (IsTaken) {
         return false;
     }
-    gpio_set_level(Pins::FpgaCreset, 0);
+    ResetStart();
     esp_rom_delay_us(1000);                    // FPGA releases its pins
     if (!BusOpen()) {
-        gpio_set_level(Pins::FpgaCreset, 1);
+        ResetEnd();
         return false;
     }
     IsHeld = true;
@@ -212,7 +237,7 @@ int64_t Release(uint32_t timeout_ms)
         IsHeld = false;
     }
     const int64_t start = esp_timer_get_time();
-    gpio_set_level(Pins::FpgaCreset, 1);
+    ResetEnd();
     const int64_t end = start + int64_t(timeout_ms) * 1000;
     while (esp_timer_get_time() < end) {
         if (Cdone()) {
@@ -247,7 +272,7 @@ uint8_t Probe(uint8_t id[3])
     if (IsHeld || IsTaken) {
         return 0xFF;
     }
-    gpio_set_level(Pins::FpgaCreset, 0);
+    ResetStart();
     esp_rom_delay_us(1000);
     // Undriven levels: bit0 CS, 1 SCK, 2 MOSI (SI), 3 MISO (SO)
     const uint8_t idle = uint8_t(gpio_get_level(Pins::CfgCs) |
@@ -283,7 +308,7 @@ uint8_t Probe(uint8_t id[3])
     }
     gpio_set_level(Pins::CfgCs, 1);
     PinsFloat();
-    gpio_set_level(Pins::FpgaCreset, 1);
+    ResetEnd();
     return idle;
 }
 

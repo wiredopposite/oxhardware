@@ -87,10 +87,13 @@ module lpc_target #(
 
     // LRESET# is filtered: it must stay low for 16 consecutive clocks to count as a reset
     // (a real LRESET# lasts milliseconds; short glitches must not abort a cycle).
+    // Starts as out of reset: loaded while the console runs (an update), the design must
+    // not take the boot hold, which only the boot's fetch of ..74 ends. A console that is
+    // off or in reset holds LRESET# low and gets the hold 16 clocks into its LCLK.
     reg [3:0] lad_q;
-    reg [1:0] lrst_s = 2'b00;
+    reg [1:0] lrst_s = 2'b11;
     reg [3:0] lrst_lo = 4'd0;
-    reg       lrst_q = 1'b0;          // filtered: 1 = out of reset
+    reg       lrst_q = 1'b1;          // filtered: 1 = out of reset
     always @(posedge lclk) begin
         lad_q  <= lad_in;
         lrst_s <= {lrst_s[0], lreset_n};

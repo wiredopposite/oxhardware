@@ -6,6 +6,9 @@
 // the port is powered (power good, then the device's attach), or after it is attached
 // to a powered port. Reported at once, the console's hub driver can take the change
 // while it is still powering the other ports, and then never looks at the port.
+//
+// As on a real hub, the status change endpoint returns the ports with change bits set
+// on every poll until the host clears them, so a report the host drops is sent again.
 #include "hub.h"
 
 #include <string.h>
@@ -105,12 +108,22 @@ typedef struct {
 
 static uint8_t Ports;
 static port_t Port[HUB_PORTS_MAX + 1];      // [0] unused, ports count from 1
-static uint8_t Changed;                     // bit n: port n has changes not yet sent
 
 static void set_change(uint8_t p, uint8_t c_feature)
 {
     Port[p].status |= BIT(c_feature);
-    Changed |= (uint8_t)(1U << p);
+}
+
+// Bit n: port n has wPortChange bits set
+static uint8_t changes(void)
+{
+    uint8_t bitmap = 0;
+    for (uint8_t p = 1; p <= Ports; p++) {
+        if (Port[p].status >> 16) {
+            bitmap |= (uint8_t)(1U << p);
+        }
+    }
+    return bitmap;
 }
 
 static void reset_ports(void)
@@ -120,7 +133,6 @@ static void reset_ports(void)
         Port[p].connect_at = 0;
         Port[p].status = 0;
     }
-    Changed = 0;
 }
 
 static void power(uint8_t p, bool on)
@@ -331,7 +343,6 @@ usbd_handle_t *hub_init(uint8_t ports, uint8_t ep0_size)
     memset(Port, 0, sizeof(Port));
     DescDevice.bMaxPacketSize0 = ep0_size;
     Ports = ports;
-    Changed = 0;
     usbd_handle_t *handle = usbd_init(USBD_HW_FPGA, &driver, ep0_size);
     if (handle != NULL && handle->port != 0) {
         usbd_deinit(USBD_HW_FPGA);      // a hub must be device 0
@@ -388,11 +399,8 @@ void hub_task(usbd_handle_t *handle)
             set_change(p, USB_FEATURE_C_PORT_CONNECTION);
         }
     }
-    if (Changed == 0 || !usbd_ep_ready(handle, EPADDR_STATUS)) {
-        return;
-    }
-    const uint8_t bitmap = Changed;
-    if (usbd_ep_write(handle, EPADDR_STATUS, &bitmap, sizeof(bitmap)) >= 0) {
-        Changed = 0;
+    const uint8_t bitmap = changes();
+    if (bitmap != 0 && usbd_ep_ready(handle, EPADDR_STATUS)) {
+        usbd_ep_write(handle, EPADDR_STATUS, &bitmap, sizeof(bitmap));
     }
 }

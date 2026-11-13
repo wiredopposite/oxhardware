@@ -14,6 +14,11 @@ void Init();
 bool Cdone();
 bool Held();
 
+// Called on the holding task: before CRESET_B goes low (Hold, Probe), after it goes high
+// again (Release, Probe). The FPGA's design is gone in between.
+using ResetHandler = void (*)();
+void OnReset(ResetHandler before, ResetHandler after);
+
 // Holds the FPGA in reset, takes the SPI bus and wakes the flash.
 bool Hold();
 // Releases the bus and CRESET_B; the FPGA reconfigures from flash. Returns the time to

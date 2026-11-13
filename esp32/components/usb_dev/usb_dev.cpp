@@ -2,12 +2,13 @@
 
 #include <cstring>
 
+#include "cfg_bus.hpp"
 #include "dcd_fpga.h"
+#include "esp_log.h"
 #include "fpga_link.hpp"
 #include "fpga_svc.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "hid_test.h"
 #include "host_link.hpp"
 #include "hub.h"
 #include "xid_pad.h"
@@ -18,46 +19,63 @@ namespace {
 
 using FpgaLink::Space;
 
+const char *Tag = "usb";
+
 constexpr uint32_t RegFeatures = 0x0008;
 constexpr uint16_t FeatureUsb = 1u << 4;
+constexpr uint32_t RegUsbCtrl = 0x0200;     // bit1 SIE_EN: 0 after the FPGA is reloaded
+constexpr uint8_t UsbSieEn = 0x02;
 
 // Commands (oxctl usb)
-constexpr uint16_t CmdStart = 0x0700;      // u8 profile
+constexpr uint16_t CmdStart = 0x0700;
 constexpr uint16_t CmdStop = 0x0701;
 constexpr uint16_t CmdStatus = 0x0702;
 constexpr uint16_t CmdPlug = 0x0703;       // u8 plugged: the gamepad on hub port 1
-constexpr uint16_t CmdPad = 0x0704;        // xid_in_t: the Xbox gamepad's state
+constexpr uint16_t CmdPad = 0x0704;        // xid_in_t: the gamepad's state
 
 // Without an interrupt the task still looks this often: the functions have timed work
 constexpr TickType_t IdleTicks = pdMS_TO_TICKS(2);
 // Polls per wakeup at most, while events keep coming
 constexpr int Burst = 16;
-constexpr uint8_t HubPorts = 4;
-constexpr uint8_t XboxHubPorts = 3;     // a controller: pad, two MU slots
+// Wanted but not running (the FPGA not ready yet): retried this often. Running: the
+// FPGA's USB is checked as often, to start again after it was reloaded.
+constexpr TickType_t RetryTicks = pdMS_TO_TICKS(1000);
+// Before the FPGA is reset: unplugged this long first, so the console has seen the
+// disconnect before the FPGA's pins float
+constexpr TickType_t UnplugTicks = pdMS_TO_TICKS(200);
+constexpr uint8_t HubPorts = 3;         // a controller: pad, two MU slots
+constexpr uint8_t PadPort = 1;
 
 TaskHandle_t Task;
-volatile bool StartReq, StopReq, Running;
+volatile bool Wanted, Running;      // Wanted: from Start() until oxctl usb stop
+volatile bool Paused;               // the FPGA is being reset
 volatile int8_t PlugReq = -1;       // -1 none, 0 unplug, 1 plug
-volatile bool PadPresent = true;    // the Xbox profile's pad is plugged in at start
-constexpr uint8_t PadPort = 1;
-Profile Want, Current;
+volatile bool PadPresent = true;    // the pad is plugged in at start
 usbd_handle_t *Hub, *Pad;
 
-bool IsXid() { return Current == Profile::Xbox; }
-
-// Device 0 first: with a hub, everything else sits behind it
-bool Start(Profile profile)
+bool HasUsb()
 {
-    Current = profile;
-    if (profile != Profile::HidTest) {
-        Hub = profile == Profile::Xbox ? hub_init(XboxHubPorts, 8) : hub_init(HubPorts, 64);
-        if (Hub == nullptr) {
-            return false;
-        }
+    uint8_t f[2];
+    return FpgaLink::Read(Space::Regs, RegFeatures, f, sizeof(f)) && f[0] != 0xFF &&
+           (f[0] | f[1] << 8) & FeatureUsb;
+}
+
+// The FPGA's USB still has what Attach() gave it
+bool UsbAlive()
+{
+    uint8_t c;
+    return FpgaLink::Read(Space::Regs, RegUsbCtrl, &c, 1) && c != 0xFF && (c & UsbSieEn);
+}
+
+// Device 0, the hub, first: the pad sits behind it
+bool Attach()
+{
+    Hub = hub_init(HubPorts, 8);
+    if (Hub == nullptr) {
+        return false;
     }
-    Pad = IsXid() ? xid_pad_init() : hid_test_init();
-    const bool attach = Hub != nullptr && (!IsXid() || PadPresent);
-    if (Pad == nullptr || (attach && !hub_attach(PadPort, Pad))) {
+    Pad = xid_pad_init();
+    if (Pad == nullptr || (PadPresent && !hub_attach(PadPort, Pad))) {
         usbd_deinit(USBD_HW_FPGA);
         Hub = Pad = nullptr;
         return false;
@@ -66,24 +84,33 @@ bool Start(Profile profile)
     return true;
 }
 
+void Detach()
+{
+    usbd_deinit(USBD_HW_FPGA);      // the pull-up goes off: the console sees it unplugged
+    Running = false;
+    Hub = Pad = nullptr;
+}
+
 void Run(void *)
 {
     FpgaSvc::Notify(FpgaSvc::Irq::Usb, xTaskGetCurrentTaskHandle());
+    TickType_t checked = 0;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, Running ? IdleTicks : portMAX_DELAY);
-        if (StopReq) {
-            StopReq = false;
-            if (Running) {
-                usbd_deinit(USBD_HW_FPGA);      // detaches: the pull-up goes off
-                Running = false;
-                Hub = Pad = nullptr;
+        ulTaskNotifyTake(pdTRUE, Running ? IdleTicks : Wanted ? RetryTicks : portMAX_DELAY);
+        if (Running && (!Wanted || Paused)) {
+            Detach();
+        }
+        if (Running && xTaskGetTickCount() - checked >= RetryTicks) {
+            checked = xTaskGetTickCount();
+            if (!UsbAlive()) {
+                ESP_LOGW(Tag, "the FPGA's USB was reset: attaching again");
+                Detach();
             }
         }
-        if (StartReq) {
-            StartReq = false;
-            if (!Running) {
-                Running = Start(Want);
-            }
+        if (Wanted && !Paused && !Running && HasUsb()) {
+            Running = Attach();
+            checked = xTaskGetTickCount();
+            ESP_LOGI(Tag, "%s", Running ? "controller attached" : "attach failed");
         }
         if (!Running) {
             continue;
@@ -100,11 +127,7 @@ void Run(void *)
             const bool ev = dcd_fpga_poll();
             usbd_task();
             hub_task(Hub);
-            if (IsXid()) {
-                xid_pad_task(Pad);
-            } else {
-                hid_test_task(Pad);
-            }
+            xid_pad_task(Pad);
             if (!ev && !dcd_fpga_pending()) {
                 break;
             }
@@ -122,11 +145,25 @@ void PadRumble(const xid_out_t *out)
     }
 }
 
-bool HasUsb()
+void BeforeFpgaReset()
 {
-    uint8_t f[2];
-    return FpgaLink::Read(Space::Regs, RegFeatures, f, sizeof(f)) && f[0] != 0xFF &&
-           (f[0] | f[1] << 8) & FeatureUsb;
+    Paused = true;
+    if (Task == nullptr || !Running) {
+        return;
+    }
+    xTaskNotifyGive(Task);
+    for (int i = 0; i < 50 && Running; i++) {
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    vTaskDelay(UnplugTicks);
+}
+
+void AfterFpgaReset()
+{
+    Paused = false;
+    if (Task != nullptr) {
+        xTaskNotifyGive(Task);
+    }
 }
 
 void Wake()
@@ -137,6 +174,13 @@ void Wake()
     xTaskNotifyGive(Task);
 }
 
+}
+
+void Start()
+{
+    CfgBus::OnReset(BeforeFpgaReset, AfterFpgaReset);
+    Wanted = true;
+    Wake();
 }
 
 void SetPadState(const uint8_t state[18])
@@ -153,7 +197,7 @@ void SetPadState(const uint8_t state[18])
 void SetPadPresent(bool present)
 {
     PadPresent = present;
-    if (Task == nullptr || !Running || Hub == nullptr) {
+    if (Task == nullptr || !Running) {
         return;
     }
     PlugReq = present ? 1 : 0;
@@ -168,49 +212,39 @@ void OnRumble(RumbleHandler handler)
 
 void RegisterCommands()
 {
-    // u8 profile
-    HostLink::Register(CmdStart, [](HostLink::Args &args, HostLink::Reply &reply) {
-        const uint8_t profile = args.U8();
-        if (args.Bad() || profile > uint8_t(Profile::Xbox)) {
-            reply.Fail(HostLink::Error::BadArgs);
-            return;
-        }
-        if (Running) {
-            reply.Fail(HostLink::Error::Busy, "already running");
-            return;
-        }
+    // After oxctl usb stop: attach again
+    HostLink::Register(CmdStart, [](HostLink::Args &, HostLink::Reply &reply) {
         if (!HasUsb()) {
             reply.Fail(HostLink::Error::Failed, "FPGA design has no USB");
             return;
         }
-        Want = Profile(profile);
-        StartReq = true;
-        Wake();
+        Start();
         for (int i = 0; i < 50 && !Running; i++) {
             vTaskDelay(pdMS_TO_TICKS(2));
         }
         if (!Running) {
-            reply.Fail(HostLink::Error::Failed, "init failed");
+            reply.Fail(HostLink::Error::Failed, "attach failed");
         }
     });
+    // Detached until oxctl usb start or the next boot
     HostLink::Register(CmdStop, [](HostLink::Args &, HostLink::Reply &) {
+        Wanted = false;
         if (Task != nullptr) {
-            StopReq = true;
             xTaskNotifyGive(Task);
             for (int i = 0; i < 50 && Running; i++) {
                 vTaskDelay(pdMS_TO_TICKS(2));
             }
         }
     });
-    // u8 plugged; hub profile only
+    // u8 plugged: the gamepad on hub port 1
     HostLink::Register(CmdPlug, [](HostLink::Args &args, HostLink::Reply &reply) {
         const uint8_t plugged = args.U8();
         if (args.Bad() || plugged > 1) {
             reply.Fail(HostLink::Error::BadArgs);
             return;
         }
-        if (!Running || Hub == nullptr) {
-            reply.Fail(HostLink::Error::Failed, "hub profile not running");
+        if (!Running) {
+            reply.Fail(HostLink::Error::Failed, "USB not running");
             return;
         }
         PlugReq = int8_t(plugged);
@@ -227,8 +261,8 @@ void RegisterCommands()
             reply.Fail(HostLink::Error::BadArgs);
             return;
         }
-        if (!Running || !IsXid()) {
-            reply.Fail(HostLink::Error::Failed, "Xbox profile not running");
+        if (!Running) {
+            reply.Fail(HostLink::Error::Failed, "USB not running");
             return;
         }
         memcpy(&in, p, sizeof(in));
@@ -239,16 +273,16 @@ void RegisterCommands()
         reply.Put(reinterpret_cast<const uint8_t *>(&out), sizeof(out));
         reply.PutU32(xid_pad_rumbles());
     });
-    // -> u8 running, u8 gamepad state, u32 reports, u32 out packets, u32 x7 driver counts,
-    //    u8 x8 device addresses, u8 hub state (0xFF: no hub)
+    // -> u8 running, u8 gamepad state, u32 reports, u32 rumble reports, u32 x7 driver
+    //    counts, u8 x8 device addresses, u8 hub state
     HostLink::Register(CmdStatus, [](HostLink::Args &, HostLink::Reply &reply) {
         dcd_fpga_stats_t s;
         dcd_fpga_get_stats(&s);
         usbd_handle_t *dev = Pad;
         reply.PutU8(Running ? 1 : 0);
         reply.PutU8(dev != nullptr ? uint8_t(dev->state) : 0);
-        reply.PutU32(IsXid() ? xid_pad_reports() : hid_test_reports());
-        reply.PutU32(IsXid() ? xid_pad_rumbles() : hid_test_out_packets());
+        reply.PutU32(xid_pad_reports());
+        reply.PutU32(xid_pad_rumbles());
         reply.PutU32(s.polls);
         reply.PutU32(s.bus_resets);
         reply.PutU32(s.setups);
@@ -258,7 +292,7 @@ void RegisterCommands()
         reply.PutU32(s.link_errors);
         reply.Put(s.addr, sizeof(s.addr));
         usbd_handle_t *hub = Hub;
-        reply.PutU8(hub != nullptr ? uint8_t(hub->state) : 0xFF);
+        reply.PutU8(hub != nullptr ? uint8_t(hub->state) : 0);
     });
 }
 

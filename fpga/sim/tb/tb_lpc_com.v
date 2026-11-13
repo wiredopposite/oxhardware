@@ -36,6 +36,21 @@ module tb;
         .fpga_irq_n(irq_n),
         .usb_dp(usb_dp), .usb_dn(usb_dn), .usb_pu()
     );
+    // A target configured while the console runs (an update: LRESET# high from the start)
+    // must never take the boot hold, which would keep LFRAME# low on a running console
+    wire hot_holding;
+    lpc_target u_hot (
+        .lclk(lclk), .lreset_n(1'b1), .lframe_n(lframe_n), .lad_in(lad),
+        .lad_out(), .lad_oe(), .lframe_oe(),
+        .serve_en(1'b1), .lframe_abort(1'b1), .io_en(1'b0),
+        .rom_base(24'h040000), .rom_mask(24'h03FFFF),
+        .req(), .req_addr(), .ack(1'b0), .ack_data(8'h00),
+        .io_addr(), .io_write(), .io_addr_nxt(), .io_addr_last(), .io_hit(1'b0),
+        .io_rd(), .io_rdata(8'h00), .io_wr(), .io_wdata(), .io_done(), .io_took(),
+        .stat_served(), .stat_timeout(), .stat_wait(), .in_reset(), .stat_recover(),
+        .stat_badaddr(), .stat_addr(), .stat_data(), .lframe_holding(hot_holding), .dbg_state()
+    );
+
     // Flash sharing: shorter quiet wait for simulation (100 us)
     defparam dut.u_fs.QUIET_CLKS = 2400;
     spi_flash_model flash (.cs_n(f_cs), .sck(f_sck), .mosi(f_mosi), .miso(f_miso));
@@ -45,6 +60,12 @@ module tb;
 
     reg [7:0] bios [0:262143];
     integer i, reads = 0, errors = 0, timeouts = 0, waits_total = 0, wait_max = 0;
+    reg hot_seen = 1'b0;
+    always @(posedge lclk) if (hot_holding !== 1'b0 && !hot_seen) begin
+        hot_seen <= 1'b1;
+        $display("ERROR: target loaded with LRESET# high took the boot hold");
+        errors = errors + 1;
+    end
     integer lframe_low_seen = 0;
     reg [7:0] exp_x = 8'h00;                  // expected = image byte ^ exp_x (bank contents)
     reg       exp_ff = 0;                     // expected = 0xFF (the flash is lent out)

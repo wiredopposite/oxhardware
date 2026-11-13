@@ -35,5 +35,6 @@ extern "C" void app_main(void)
     UsbDev::RegisterCommands();
     BtXid::RegisterCommands();
     BtXid::Start();
+    UsbDev::Start();            // after BtXid: the pad absent until a controller connects
     ESP_LOGI(Tag, "OpenOX ESP32 up, FPGA CDONE=%d", CfgBus::Cdone());
 }

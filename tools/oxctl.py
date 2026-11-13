@@ -37,9 +37,9 @@
     py -3 tools/oxctl.py -p COM12 prog smbus-read ADDR REG
     py -3 tools/oxctl.py -p COM12 prog smbus-write ADDR REG VALUE
     py -3 tools/oxctl.py -p COM12 prog confirm                  # confirm the trial boot running now
-    py -3 tools/oxctl.py -p COM12 usb start [pad|hub|xbox]|stop|status  # USB device
-    py -3 tools/oxctl.py -p COM12 usb plug|unplug        # hub profiles: gamepad on port 1
-    py -3 tools/oxctl.py -p COM12 usb pad a start --lx 20000  # xbox profile: hold buttons
+    py -3 tools/oxctl.py -p COM12 usb status|stop|start  # the controller (attached from boot)
+    py -3 tools/oxctl.py -p COM12 usb plug|unplug        # its gamepad on hub port 1
+    py -3 tools/oxctl.py -p COM12 usb pad a start --lx 20000  # hold buttons
     py -3 tools/oxctl.py -p COM12 bt status|pair on|off|config on|off|forget  # Bluetooth
 
 fpga id/read/write hold the FPGA in reset (CRESET low) for the duration: the Xbox
@@ -70,7 +70,6 @@ SMBUS_READ, SMBUS_WRITE, SMC_POWER = 0x0400, 0x0401, 0x0402
 PROG_XFER = 0x0500
 NOR_INFO, NOR_READ, NOR_ERASE, NOR_WRITE, NOR_CRC = 0x0600, 0x0601, 0x0602, 0x0603, 0x0604
 USB_START, USB_STOP, USB_STATUS, USB_PLUG, USB_PAD = 0x0700, 0x0701, 0x0702, 0x0703, 0x0704
-USB_PROFILES = {"pad": 0, "hub": 1, "xbox": 2}
 BT_STATUS, BT_PAIR, BT_CONFIG, BT_FORGET = 0x0800, 0x0801, 0x0802, 0x0803
 XID_DIGITAL = ["up", "down", "left", "right", "start", "back", "ls", "rs"]
 XID_ANALOG = ["a", "b", "x", "y", "black", "white", "lt", "rt"]
@@ -116,6 +115,10 @@ def cmd_fpga(link, a):
         cdone, held = r.u8(), r.u8()
         print(f"CDONE {'high (configured)' if cdone else 'low'}  "
               f"{'held in reset by the ESP32' if held else 'not held'}")
+        return
+    if a.what == "hold":
+        link.request(FPGA_HOLD)
+        print("FPGA held in reset (all its pins Hi-Z with weak pull-ups) until fpga release")
         return
     if a.what == "release":
         release(link)
@@ -235,22 +238,17 @@ def cmd_link(link, a):
 
 def cmd_usb(link, a):
     if a.what == "start":
-        a.profile = a.profile_or_buttons[0] if a.profile_or_buttons else "pad"
-        if a.profile not in USB_PROFILES or len(a.profile_or_buttons) > 1:
-            sys.exit("usb start: pad, hub or xbox")
-        link.request(USB_START, bytes([USB_PROFILES[a.profile]]))
-        print("started: " + {"pad": "test gamepad", "hub": "hub, test gamepad on port 1",
-                             "xbox": "controller hub, Xbox gamepad on port 1"}[a.profile]
-              + ", attached")
+        link.request(USB_START)
+        print("controller attached")
     elif a.what == "stop":
         link.request(USB_STOP)
-        print("stopped, detached")
+        print("controller detached until usb start or the next boot")
     elif a.what in ("plug", "unplug"):
         link.request(USB_PLUG, bytes([a.what == "plug"]))
         print(f"gamepad {a.what}ged, hub port 1")
     elif a.what == "pad":
         digital, analog = 0, [0] * 8
-        for name in a.profile_or_buttons:
+        for name in a.buttons:
             n = name.lower()
             if n in XID_DIGITAL:
                 digital |= 1 << XID_DIGITAL.index(n)
@@ -261,7 +259,7 @@ def cmd_usb(link, a):
         r = link.request(USB_PAD, bytes([digital, 0] + analog)
                          + struct.pack("<hhhh", a.lx, a.ly, a.rx, a.ry))
         left, right, n = struct.unpack_from("<HHI", r)
-        held = [x for x in a.profile_or_buttons] or ["nothing"]
+        held = a.buttons or ["nothing"]
         print(f"holding {' '.join(held)}; rumble left {left} right {right} ({n} reports)")
     else:
         r = link.request(USB_STATUS)
@@ -269,7 +267,7 @@ def cmd_usb(link, a):
         v = struct.unpack_from("<9I", r, 2)
         addr = r[38:46]
         print(f"{'running' if running else 'stopped'}, gamepad {USB_STATES[state] if state < 4 else state}"
-              + (f", hub {USB_STATES[r[46]] if r[46] < 4 else r[46]}" if len(r) > 46 and r[46] != 0xFF else ""))
+              + (f", hub {USB_STATES[r[46]] if r[46] < 4 else r[46]}" if len(r) > 46 else ""))
         print(f"reports taken {v[0]}, OUT packets {v[1]}")
         print(f"events {v[2]}: bus resets {v[3]}, SETUPs {v[4]}, IN done {v[5]}, OUT done {v[6]}, "
               f"suspends {v[7]}, link errors {v[8]}")
@@ -586,7 +584,7 @@ def main():
     s.add_argument("level", choices=LEVELS)
     s.add_argument("tag", nargs="?")
     s = sub.add_parser("fpga")
-    s.add_argument("what", choices=["status", "id", "probe", "read", "write", "release"])
+    s.add_argument("what", choices=["status", "id", "probe", "read", "write", "hold", "release"])
     s.add_argument("file", nargs="?")
     s.add_argument("--addr", type=lambda x: int(x, 0), default=0)
     s.add_argument("--len", type=lambda x: int(x, 0), default=0)
@@ -630,9 +628,7 @@ def main():
     s.add_argument("--reset", action="store_true", help="boot, upload: reset the console now")
     s = sub.add_parser("usb")
     s.add_argument("what", choices=["start", "stop", "status", "plug", "unplug", "pad"])
-    s.add_argument("profile_or_buttons", nargs="*", metavar="ARG",
-                   help="start: pad (test gamepad), hub (it behind a 4-port hub) or xbox "
-                        "(controller: hub + Xbox gamepad); pad: buttons to hold")
+    s.add_argument("buttons", nargs="*", help="pad: buttons to hold")
     for axis in ("lx", "ly", "rx", "ry"):
         s.add_argument(f"--{axis}", type=int, default=0, help="pad: stick axis, -32768..32767")
     s = sub.add_parser("bt")

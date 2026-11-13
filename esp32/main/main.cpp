@@ -8,6 +8,7 @@
 #include "rom_mgr.hpp"
 #include "smbus.hpp"
 #include "sys_cmds.hpp"
+#include "usb_dev.hpp"
 
 static const char *Tag = "main";
 
@@ -27,5 +28,6 @@ extern "C" void app_main(void)
     RomMgr::Start();
     ProgServer::RegisterCommands();
     ProgServer::StartMailbox();
+    UsbDev::RegisterCommands();
     ESP_LOGI(Tag, "OpenOX ESP32 up, FPGA CDONE=%d", CfgBus::Cdone());
 }

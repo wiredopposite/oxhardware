@@ -37,6 +37,7 @@
     py -3 tools/oxctl.py -p COM12 prog smbus-read ADDR REG
     py -3 tools/oxctl.py -p COM12 prog smbus-write ADDR REG VALUE
     py -3 tools/oxctl.py -p COM12 prog confirm                  # confirm the trial boot running now
+    py -3 tools/oxctl.py -p COM12 usb start|stop|status         # USB device (test gamepad)
 
 fpga id/read/write hold the FPGA in reset (CRESET low) for the duration: the Xbox
 loses its BIOS meanwhile, and iceprog must not be running.
@@ -65,6 +66,8 @@ IRQ_BITS = ["LRST_ASSERT", "LRST_DEASSERT", "BANK_SWAPPED", "USB", "IOTRAP", "MB
 SMBUS_READ, SMBUS_WRITE, SMC_POWER = 0x0400, 0x0401, 0x0402
 PROG_XFER = 0x0500
 NOR_INFO, NOR_READ, NOR_ERASE, NOR_WRITE, NOR_CRC = 0x0600, 0x0601, 0x0602, 0x0603, 0x0604
+USB_START, USB_STOP, USB_STATUS = 0x0700, 0x0701, 0x0702
+USB_STATES = ["disabled", "default", "addressed", "configured"]
 SMC = 0x10
 
 LEVELS = ["none", "error", "warn", "info", "debug", "verbose"]
@@ -221,6 +224,26 @@ def cmd_link(link, a):
             if i % 20 == 0:
                 print(f"\r{i}/{a.count}", end="", flush=True)
         print(f"\r{a.count} scratch write/read passes ok in {time.time() - t0:.1f} s")
+
+
+def cmd_usb(link, a):
+    if a.what == "start":
+        link.request(USB_START, bytes([0]))
+        print("started: test gamepad, attached")
+    elif a.what == "stop":
+        link.request(USB_STOP)
+        print("stopped, detached")
+    else:
+        r = link.request(USB_STATUS)
+        running, state = r[0], r[1]
+        v = struct.unpack_from("<9I", r, 2)
+        addr = r[38:46]
+        print(f"{'running' if running else 'stopped'}, device {USB_STATES[state] if state < 4 else state}")
+        print(f"reports taken {v[0]}, OUT packets {v[1]}")
+        print(f"events {v[2]}: bus resets {v[3]}, SETUPs {v[4]}, IN done {v[5]}, OUT done {v[6]}, "
+              f"suspends {v[7]}, link errors {v[8]}")
+        used = [f"{d}:{x}" for d, x in enumerate(addr) if x != 0xFF]
+        print("addresses (device:address)", " ".join(used) if used else "none")
 
 
 def smb_read(link, addr, reg, width=1):
@@ -543,6 +566,8 @@ def main():
     s.add_argument("--trial", action="store_true",
                    help="upload: a Loader or System, current only once it confirms")
     s.add_argument("--reset", action="store_true", help="boot, upload: reset the console now")
+    s = sub.add_parser("usb")
+    s.add_argument("what", choices=["start", "stop", "status"])
     s = sub.add_parser("monitor")
     s.add_argument("--reset", action="store_true", help="reset the ESP32 after opening")
     a = p.parse_args()
@@ -580,6 +605,8 @@ def main():
             cmd_prog(link, a)
         elif a.group == "log":
             cmd_log(link, a)
+        elif a.group == "usb":
+            cmd_usb(link, a)
         elif a.group == "monitor":
             if a.reset:
                 link.reset()

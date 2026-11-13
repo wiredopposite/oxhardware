@@ -63,7 +63,7 @@ FLASH_ID, FLASH_READ, FLASH_ERASE, FLASH_WRITE, FLASH_CRC = 0x0203, 0x0204, 0x02
 FLASH_PROBE = 0x0208
 LINK_READ, LINK_WRITE, LINK_PROBE, LINK_CLOCK, LINK_IRQ = 0x0300, 0x0301, 0x0302, 0x0303, 0x0304
 IRQ_BITS = ["LRST_ASSERT", "LRST_DEASSERT", "BANK_SWAPPED", "USB", "IOTRAP", "MBX_RX", "COM_RX",
-            "ERROR", "CRC_DONE", "NOR_DONE", "FLASHEMU", "BOOTCTL"]
+            "ERROR", "bit8", "bit9", "FLASHEMU", "BOOTCTL"]
 SMBUS_READ, SMBUS_WRITE, SMC_POWER = 0x0400, 0x0401, 0x0402
 PROG_XFER = 0x0500
 NOR_INFO, NOR_READ, NOR_ERASE, NOR_WRITE, NOR_CRC = 0x0600, 0x0601, 0x0602, 0x0603, 0x0604
@@ -340,7 +340,7 @@ def parse_size(t):
 def cmd_nor(link, a):
     if a.what == "info":
         r = link.request(NOR_INFO)
-        print(f"engine {'ready' if r[0] else 'not ready'}  flash ID: {r[1:4].hex(' ').upper()}")
+        print(f"flash {'reachable' if r[0] else 'not reachable'}  ID: {r[1:4].hex(' ').upper()}")
         return
     t0 = time.time()
     if a.what == "read":

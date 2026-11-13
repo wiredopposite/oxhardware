@@ -22,8 +22,7 @@ RTL_hello     := $(UART_RTL)
 RTL_lpc_probe := $(UART_RTL) rtl/probe/lpc_sniff.v boards/$(BOARD)/$(BOARD)_clocks.v
 RTL_lpc_iolog := $(UART_RTL) rtl/probe/lpc_sniff.v rtl/common/spram64.v boards/$(BOARD)/$(BOARD)_clocks.v
 RTL_lpc_serve := $(UART_RTL) rtl/lpc/lpc_target.v rtl/mem/spi_stream.v rtl/common/word_report.v rtl/probe/trace_buf.v rtl/common/trace_dump.v boards/$(BOARD)/$(BOARD)_clocks.v
-RTL_lpc_com   := $(UART_RTL) rtl/lpc/lpc_target.v rtl/lpc/lreset_filter.v rtl/lpc/com16550.v rtl/lpc/superio_cfg.v rtl/common/async_fifo.v rtl/mem/spi_stream.v rtl/link/link_slave.v rtl/link/link_regs.v rtl/lpc/bootctl_port.v rtl/boot/bank_ctrl.v rtl/common/mbx_fifo.v rtl/lpc/mailbox.v rtl/mem/nor_ctrl.v boards/$(BOARD)/$(BOARD)_clocks.v
-RTL_lpc_usb   := $(UART_RTL) rtl/lpc/lpc_target.v rtl/lpc/lreset_filter.v rtl/lpc/com16550.v rtl/lpc/superio_cfg.v rtl/common/async_fifo.v rtl/mem/spi_stream.v rtl/link/link_slave.v rtl/link/link_regs.v rtl/lpc/bootctl_port.v rtl/boot/bank_ctrl.v $(USB_RTL) boards/$(BOARD)/$(BOARD)_clocks.v
+RTL_lpc_com   := $(UART_RTL) rtl/lpc/lpc_target.v rtl/lpc/lreset_filter.v rtl/lpc/com16550.v rtl/lpc/superio_cfg.v rtl/common/async_fifo.v rtl/mem/spi_stream.v rtl/link/link_slave.v rtl/link/link_regs.v rtl/lpc/bootctl_port.v rtl/boot/bank_ctrl.v rtl/common/mbx_fifo.v rtl/lpc/mailbox.v rtl/mem/flash_share.v $(USB_RTL) boards/$(BOARD)/$(BOARD)_clocks.v
 
 RTL := $(RTL_$(DESIGN)) boards/$(BOARD)/$(TOP).v
 
@@ -33,7 +32,6 @@ FREQ_lpc_probe := 24
 FREQ_lpc_iolog := 24
 FREQ_lpc_serve := 24
 FREQ_lpc_com   := 24
-FREQ_lpc_usb   := 24
 FREQ           := $(or $(FREQ_$(DESIGN)),48)
 CLKPY          := $(wildcard boards/$(BOARD)/$(DESIGN)_clocks.py)
 PNR_EXTRA      := $(if $(CLKPY),--pre-pack $(CLKPY))

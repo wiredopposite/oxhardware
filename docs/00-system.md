@@ -67,10 +67,10 @@ SMBus device emulation (needs another wire — revisit with the standby option),
 ```
                          ┌─────────────────────────────── iCE40UP5K ───────────────────────────────┐
  Xbox LPC header         │ ┌────────────┐  rd/wr req  ┌──────────────┐  QSPI  ┌─────────────────┐    │
- LAD[3:0] LCLK LRESET# ─►│ │ lpc_target │────────────►│ nor_ctrl     │◄──────►│ QSPI NOR 16 MB  │◄─┐ │
+ LAD[3:0] LCLK LRESET# ─►│ │ lpc_target │────────────►│ spi_stream   │◄──────►│ QSPI NOR 16 MB  │◄─┐ │
  LFRAME# D0            ◄─│ │ (LCLK dom.)│◄────────────│ +prefetch    │ config │ bitstream, boot │  │ │
-                         │ └┬──┬──┬──┬──┘             │ +flash_emu   │  pins  │ cfg, ROM banks  │  │ │
-                         │  │  │  │  └─ mem writes ──►│ +arbiter     │        └─────────────────┘  │ │
+                         │ └┬──┬──┬──┬──┘             │ +flash_share │  pins  │ cfg, ROM banks  │  │ │
+                         │  │  │  │  └─ mem writes ──►│ +flash_emu   │        └─────────────────┘  │ │
                          │  │  │  └──► com16550 ◄──► uart_phy ───────► TX/RX/RTS/CTS ──► USB-UART B │ │
                          │  │  └─────► superio, mailbox                                          │ │
                          │  └────────► iotrap (windows, shadow RAM, event FIFO in SPRAM, bankmap) │ │
@@ -98,7 +98,7 @@ SMBus device emulation (needs another wire — revisit with the standby option),
 | # | Decision | Status | Rationale |
 |---|---|---|---|
 | D1 | **ROMs live in a QSPI NOR on the FPGA's config bus; the FPGA self-boots from it and serves ROMs straight from it.** PSRAM dropped. ESP32 flash holds only firmware (+ a golden bitstream for recovery). | [DECIDED] | The UP5K needs *some* external memory regardless (128 KB SPRAM < smallest 256 KB BIOS), so it's NOR vs. PSRAM, not NOR vs. nothing. NOR: same part count, non-volatile, holds the bitstream too, no ESP32 on the boot path (P-1, §4), flasher emulation is natural. |
-| D2 | ESP32 is wired to the config bus too: it can hold `CRESET_B` low and program the NOR directly (factory programming, unbrick), or slave-configure the FPGA after putting the NOR in deep power-down | [PROPOSED] | No external programmer ever needed; a bad bitstream can't brick the board. |
+| D2 | ESP32 is wired to the config bus too: it can hold `CRESET_B` low and program the NOR directly (factory programming, unbrick), or slave-configure the FPGA after putting the NOR in deep power-down. With the FPGA running, the ESP32 **borrows** the NOR for every read, erase and program: the FPGA floats its pins once the console is quiet and answers BIOS reads with 0xFF meanwhile. There is no flash engine in the FPGA | [DECIDED] | No external programmer ever needed; a bad bitstream can't brick the board. The UP5K can't hold a flash engine as well as the USB device, and ROM writes happen only from the user's menu, which runs from RAM (A/B banks: the old bank keeps being served until the next boot). |
 | D3 | ESP32↔FPGA link uses **separate** FPGA pins from the config bus | [PROPOSED] | After boot the FPGA is master of the NOR on the config pins; the ESP32 needs its own always-available slave link. |
 | D4 | USB: FPGA PHY+SIE with **multiple device addresses and a pooled EP buffer table**; ESP32 runs **pico_usb** with a new DCD | [PROPOSED] | Only one physical port (MCPX test pads). pico_usb already does composite *and* hub emulation (hub + N downstream devices sharing one wire) and ox's XID/MSC functions are written against it. |
 | D5 | LPC on `LCLK` directly; everything else on 48 MHz PLL from a 12 MHz oscillator | [PROPOSED] | USB needs an accurate 48 MHz; LPC timing follows the host clock. |

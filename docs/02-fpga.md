@@ -35,11 +35,9 @@ top_<board>.v              pins, SB_IO, SB_PLL40_PAD, SB_RGBA_DRV, SB_SPRAM256KA
     ├── lpc/lpc_io_bus.v          claims I/O cycles for: com, superio, mailbox, iotrap (exact decode, priority order)
     ├── lpc/com16550.v, lpc/superio_cfg.v, lpc/mailbox.v
     ├── lpc/iotrap.v              8 windows, shadow RAM, event FIFO writer, deferred reads, bank-select fast path
-    ├── mem/nor_qspi.v            W25Q-class: read (quad I/O + continuous mode), erase/program, suspend/resume
-    ├── mem/nor_arbiter.v         LPC read > flash-emu > link read > link program/erase > CRC
-    ├── mem/rom_prefetch.v        32-byte line buffer(s)
+    ├── mem/spi_stream.v          BIOS reads: streaming read with a small buffer, wake from power-down
+    ├── mem/flash_share.v         lends the flash to the ESP32; BIOS reads get 0xFF meanwhile
     ├── mem/flash_emu.v           JEDEC command FSM on LPC memory writes
-    ├── mem/crc32_engine.v
     ├── uart/uart_phy.v           8N1, RTS/CTS optional
     ├── usb/{usb_phy_rx,usb_phy_tx,usb_sie,usb_core}.v
     └── led/status_led.v
@@ -164,18 +162,17 @@ Lets existing Xbox flashers (which talk to a parallel/LPC flash chip with AMD/SS
 
 - Address decode uses `A[19:0] & size_mask` (unlock addresses 0x5555/0x2AAA or 0x555/0x2AA, depending on the emulated part).
 - Commands: reset (`F0`), autoselect (`90` → reads return `FE_ID` mfr/device at offsets 0/1), byte program (`A0`), sector erase (`80`,`30`), chip erase (`80`,`10` → **active bank only**), status polling: DQ7 data-polling and DQ6 toggle while busy.
-- Byte program → buffered into the NOR program buffer; flushed as a page program when the next byte leaves the page or after ~50 µs idle (status polling reports "busy" until flushed).
+- Byte program → buffered; the ESP32 programs the buffer into the NOR (borrowing the flash, 01-interface §5.5) when the next byte leaves the page or after ~50 µs idle (status polling reports "busy" until it is written).
 - Sector size presented to the flasher is 4 KB, matching both the SST49LF0x0 parts and the NOR's smallest erase.
 - `PROTECT_MASK` slot → command ignored, `FLASHEMU_PROTECT` error, status returns "done" (flashers then fail verify, safely).
 - Raises `FLASHEMU` on sequence start/finish so the ESP32 can update the catalogue (CRC, "modified by console").
 
 ## 7. NOR controller
 
-Target part: W25Q128JV-class (16 MB, 3.3 V, quad, 4 KB sectors, erase/program suspend).
+Target part: W25Q128JV-class (16 MB, 3.3 V, quad, 4 KB sectors).
 
-- Boot: release power-down `0xAB`, set QE (status reg 2) once at factory, quad I/O read `0xEB` with continuous mode.
-- Ops: 4 KB erase `0x20`, 64 KB erase `0xD8`, page program `0x02` (or quad `0x32`), status `0x05/0x35`, suspend `0x75`, resume `0x7A`.
-- Region guard: anything below `ROM_BASE` refused unless `NOR_UNLOCK`.
+- The FPGA only reads the NOR. Boot: release power-down `0xAB`, set QE (status reg 2) once at factory, quad I/O read `0xEB` with continuous mode.
+- Erases and programs are the ESP32's, over the config bus: `flash_share` lends it the flash once the console has gone 1 ms without a BIOS read, and answers BIOS reads with 0xFF until it is given back (01-interface §5.5). The ESP32 refuses anything below the catalogue (the bitstream area) unless it holds the FPGA in reset.
 - SCLK = 48 MHz via DDR output register; capture on a delayed/opposite edge — validate margins in nextpnr and on hardware.
 - **UPduino v3.1**: W25Q32 (4 MB, JEDEC `EF 40 16`) on the config pins: SCK 15, CS# 16, SO 14 → DI, SI 17 ← DO. IO2/IO3 are not connected to the FPGA, so the board builds with `NOR_WIDTH=1`. `lpc_serve` reads with `0x03` at SCK = LCLK/2 into a two-byte stream buffer; sequential fetches then cost a few SYNC waits each and the worst observed wait was 87 LCLK (00-system §4.4). Small-flash layout per 01-interface §6.1.
 
@@ -219,9 +216,8 @@ The SD card is on the ESP32 (00-system D8). MSC bulk data is ordinary slot traff
 | 16550 + Super I/O + FIFOs + UART PHY | 450 | 2 | |
 | Mailbox | 120 | 2 | |
 | iotrap (8 windows, shadow, FIFO writer, bankmap) | 400 | 1 | 1 |
-| NOR ctrl + arbiter + prefetch + suspend | 500 | 2 | |
+| NOR reader + flash lending | 250 | 0 | |
 | flash_emu | 250 | 0 | |
-| CRC | 120 | 0 | |
 | Link + regfile + CDC + boot_seq | 550 | 1 | |
 | USB PHY + SIE + 32 slots (measured) | 850 (≈ 1.3 k LCs) | 8 | |
 | LED + misc | 100 | 0 | |
@@ -229,7 +225,7 @@ The SD card is on the ESP32 (00-system D8). MSC bulk data is ordinary slot traff
 
 Still above a comfortable fill (~80 %) for nextpnr at 48 MHz.
 
-**Measured (UPduino builds):** `lpc_com` (LPC target, COM + Super I/O, boot control, banks, mailbox, NOR engine, link) is 4181 LCs (79 %); the NOR engine alone is ~970 LUTs. Adding the USB core makes 5514 LCs (104 %), so the UP5K can't hold both. `lpc_usb` drops the mailbox and the NOR engine for USB bring-up: 3669 LCs (69 %), all clocks met (48 MHz domain 52 MHz).
+**Measured (UPduino build):** `lpc_com` (LPC target, COM + Super I/O, boot control, banks, mailbox, flash lending, USB device, link) is 4479 LCs (84 %). Max frequencies: `lpc_clk` 36.0 MHz (needs 33.3), 48 MHz USB line side 55.0 MHz, 24 MHz system clock 31.6 MHz, link 61 MHz. A flash engine in the FPGA (erase, program, CRC over the link) takes ~970 LUTs and doesn't fit beside the USB core; the ESP32 does that work instead.
 
 **Measured on the UPduino (lpc_probe, ~1.6 k LCs):** routing, not logic, dominates paths at 48 MHz on the UP5K — typical failing paths were 6–8 ns logic + 14–16 ns routing. Wide counter compares, 16:1 register muxes feeding an output, and multi-condition enables each failed 48 MHz until pipelined. Rules for every `clk_sys` module: flag counter terminal counts a cycle early; register mux outputs; decode events into registered one-hot flags; count up from zero; no wide magnitude compares. Budget the full design for ≤ ~75 % fill. Mitigations, in order: merge mailbox into iotrap deferred mode (−100), drop Super I/O as a build option. No larger UP5K-pin-compatible part exists; if the mitigations aren't enough, see §10.1.
 

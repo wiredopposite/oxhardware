@@ -1,10 +1,11 @@
 #pragma once
 
-// The FPGA's flash, reached through its NOR engine over the link (docs/01-interface.md
-// §5.5) while the FPGA keeps serving the BIOS. While the FPGA is held in reset the same
-// calls go over the config bus instead.
+// The FPGA's flash, over the config bus. With the FPGA running, each call borrows the
+// flash from it (docs/01-interface.md §5.5): the FPGA lets go of the pins once the
+// console has gone 1 ms without reading it, and answers BIOS reads with 0xFF until the
+// call returns. While the FPGA is held in reset the calls use the bus directly.
 //
-// The engine refuses erase and program below the ROM catalogue (the bitstream).
+// Borrowed, erase and program below the ROM catalogue (the bitstream) are refused.
 
 #include <cstddef>
 #include <cstdint>
@@ -13,7 +14,7 @@ namespace Nor {
 
 void Init();
 
-// The engine has woken the flash and read its JEDEC ID.
+// The flash can be reached: the FPGA is held, or its design lends the flash.
 bool Ready();
 bool ReadId(uint8_t id[3]);
 bool Read(uint32_t addr, uint8_t *buf, size_t len);

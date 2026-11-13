@@ -96,7 +96,7 @@ A trial boot is judged by §7 instead. A boot that was already running when the 
 
 An update never overwrites the running image:
 
-1. `rom_mgr` writes the new image into the role's spare slot (A/B) and verifies it with the FPGA CRC engine.
+1. `rom_mgr` writes the new image into the role's spare slot (A/B) and verifies its CRC.
 2. The ESP32 arms the new slot with `TRIAL_PENDING` set. The trial starts at the next reset, or at once if the console is off or in reset (§3); the console can also be reset straight after the upload.
 3. The new image confirms once it is up. System: `ConfirmBoot` (07-console-protocol §3) after its UI has started. Loader: `0xA5` to port +3 before it resets into its target, which sets `TRIAL_CONFIRMED`.
 4. Confirmed → the ESP32 makes it current: for the Loader, a new boot config record with `DEFAULT_BANK` = the new slot; for System, the catalogue and `SYSTEM_BANK`. The old slot becomes the spare.

@@ -1,21 +1,23 @@
-// UPduino v3.1 design "lpc_com": lpc_serve's BIOS serving plus a 16550 COM port and a
-// Super I/O configuration space, so a debug kernel's serial output reaches the PC.
+// UPduino v3.1 design "lpc_com": BIOS serving, COM port, Super I/O, boot control port,
+// mailbox and the full-speed USB device.
 //
 // BIOS: every LPC memory read in FFxxxxxx from the active bank (bank_ctrl: 256 K slots
-// from flash offset 0x40000, slot 0 by default, mirrored), 1.6 LFRAME# abort through the external N-MOSFET (lframe_gate, all four
-// identical), boot hold until the read of ..74.
+// from flash offset 0x40000, slot 0 by default, mirrored), 1.6 LFRAME# abort through the
+// external N-MOSFET (lframe_gate, all four identical), boot hold until the read of ..74.
 // COM: 16550 registers at 0x3F8, or wherever the guest places LDN 4/5 through the
 // Super I/O at 0x2E/0x2F. Its data goes to the UART pins at a fixed 115200 8N1; the
 // guest's divisor is ignored.
 //
 // Boot control port for the Loader at 0x00E0 (bootctl_port), one-shot armed boots.
 // Mailbox: the programmer protocol's console port at 0x0B00, to the ESP32 over the link.
-// NOR engine: the ESP32 reads, programs, erases and CRCs the flash over the link, between
-// BIOS reads (nor_ctrl, spi_stream parks for it).
+// Flash: the ESP32 borrows it (flash_share) and reads, programs and erases it itself over
+// the config bus; BIOS reads meanwhile get 0xFF.
+// USB: D+/D- to the console's controller port (usb_core); 48 MHz for its line side, the
+// rest of the design on 24 MHz divided from it.
 //
 // Write the image first:  make DESIGN=lpc_com rom ROM=<file>
 // Link: ESP32 SPI slave, register space 0 (identity, scratch, LPC status, banks, IRQs,
-// mailbox, NOR engine), SPACE 3 port 1 (mailbox FIFOs), port 3 (NOR buffer).
+// flash, mailbox, USB 0x200-0x25F), SPACE 1 (USB buffers), SPACE 3 port 1 (mailbox FIFOs).
 // LED: blue = serving reads, green = idle, red = COM output, red blink = no 12 MHz clock.
 `default_nettype none
 
@@ -43,13 +45,18 @@ module top_lpc_com (
     input  wire       link_cs_n,
     input  wire       link_mosi,
     output wire       link_miso,
-    output wire       fpga_irq_n
+    output wire       fpga_irq_n,
+    // USB to the console's controller port: D+/D- through 27 R, 1.5 k from usb_pu to D+
+    inout  wire       usb_dp,
+    inout  wire       usb_dn,
+    output wire       usb_pu
 );
     localparam integer BAUD_DIV = 208;           // 24 MHz / 115200
 
-    wire clk, pll_locked, rst, clk_lf;
-    upduino31_clocks #(.DIVQ(3'b101)) u_clk (      // 24 MHz
-        .clk12(clk12), .clk_sys(clk), .pll_locked(pll_locked), .rst(rst), .clk_lf(clk_lf)
+    wire clk, clk48, pll_locked, rst, clk_lf;
+    upduino31_clocks #(.DUAL(1)) u_clk (           // 24 MHz system, 48 MHz USB line side
+        .clk12(clk12), .clk_sys(clk), .clk_2x(clk48), .pll_locked(pll_locked), .rst(rst),
+        .clk_lf(clk_lf)
     );
 
     // LRESET# through a glitch filter (system clock): everything below uses lreset_n
@@ -102,20 +109,21 @@ module top_lpc_com (
         .stat_addr(st_addr), .stat_data(), .lframe_holding(holding), .dbg_state()
     );
 
-    wire f_cs_n, f_sck, f_mosi, s_parked;
-    wire nor_park, nor_own, n_cs_n, n_sck, n_mosi;
+    wire f_cs_n, f_sck, f_mosi, s_req, s_ack, fs_hold, fs_grant;
+    wire [7:0] s_data;
     spi_stream u_flash (
-        .clk(lpc_clk), .rst(tgt_in_reset),           // re-wake the flash on every boot
-        .park(nor_park), .parked(s_parked),
-        .req(req), .req_addr(req_addr), .ack(ack), .ack_data(ack_data),
+        .clk(lpc_clk), .rst(tgt_in_reset || fs_hold),  // re-wake the flash on every boot
+        .park(1'b0), .parked(),
+        .req(s_req), .req_addr(req_addr), .ack(s_ack), .ack_data(s_data),
         .restarted(restarted),
         .spi_cs_n(f_cs_n), .spi_sck(f_sck), .spi_mosi(f_mosi), .spi_miso(flash_miso)
     );
-    // The NOR engine drives the flash while it holds it; otherwise spi_stream does, only
-    // while the console is out of reset. CS# has a pull-up.
-    assign flash_csn  = nor_own ? n_cs_n : tgt_in_reset ? 1'bz : f_cs_n;
-    assign flash_sck  = nor_own ? n_sck  : tgt_in_reset ? 1'bz : f_sck;
-    assign flash_mosi = nor_own ? n_mosi : tgt_in_reset ? 1'bz : f_mosi;
+    // spi_stream drives the flash only while the console is out of reset and the ESP32
+    // hasn't got it (CS# has a pull-up), so the ESP32 or iceprog can write it.
+    wire f_float = tgt_in_reset || fs_grant;
+    assign flash_csn  = f_float ? 1'bz : f_cs_n;
+    assign flash_sck  = f_float ? 1'bz : f_sck;
+    assign flash_mosi = f_float ? 1'bz : f_mosi;
 
     // ------------------------------------------------------------ LCLK domain: I/O devices
     // Port decode, registered on the last address nibble so the claim decision on the
@@ -210,10 +218,10 @@ module top_lpc_com (
     wire served_pulse = tog_s[2] ^ tog_s[1];
 
     wire        l_wr, l_rd, l_miso, l_miso_oe;
-    wire        armed, irq, bank_hit, mbx_hit, mbx_irq, mbx_sts, l_rd_sent, l_idle;
-    wire [7:0]  mbx_rdata, mbx_fdata;
-    wire        nor_hit, nor_busy, nor_done, crc_done;
-    wire [7:0]  nor_rdata, nor_bdata;
+    wire        usb_oe, usb_dp_o, usb_dn_o, usb_pu_en, usb_hit, usb_irq, usb_irq_lvl;
+    wire [7:0]  usb_rdata, usb_bdata;
+    wire        armed, irq, bank_hit, l_rd_sent, l_idle, mbx_hit, mbx_irq, mbx_sts, fs_hit;
+    wire [7:0]  mbx_rdata, mbx_fdata, fs_rdata;
     wire [7:0]  bank_rdata;
     wire [2:0]  l_space;
     wire [23:0] l_addr;
@@ -222,14 +230,14 @@ module top_lpc_com (
         .clk(clk), .rst(rst),
         .sck(link_sck), .cs_n(link_cs_n), .mosi(link_mosi),
         .miso(l_miso), .miso_oe(l_miso_oe),
-        .sts({irq, lrst_s[1], !inrst_s[1], 2'd0, mbx_sts, 1'b0, nor_busy}),
+        .sts({irq, lrst_s[1], !inrst_s[1], usb_irq_lvl, 1'b0, mbx_sts, 1'b0, fs_grant}),
         .wr(l_wr), .rd(l_rd), .space(l_space), .addr(l_addr),
         .wdata(l_wdata), .rdata(l_rdata), .rd_sent(l_rd_sent), .idle(l_idle)
     );
     assign link_miso  = l_miso_oe ? l_miso : 1'bz;
     assign fpga_irq_n = !irq;
 
-    link_regs #(.BOARD_ID(8'h01), .FEATURES(16'h006F)) u_regs (
+    link_regs #(.BOARD_ID(8'h01), .FEATURES(16'h025F)) u_regs (
         .clk(clk), .wr(l_wr && l_space == 3'd0), .addr(l_addr[15:0]), .wdata(l_wdata),
         .rdata(reg_rdata), .lreset_n(lrst_s[1]), .served_pulse(served_pulse),
         .armed(armed)
@@ -239,7 +247,7 @@ module top_lpc_com (
         .rdata(bank_rdata), .hit(bank_hit),
         .lreset_n(lrst_s[1]), .served_pulse(served_pulse), .served_addr(st_addr),
         .cp_tog(bc_tog), .cp_off(bc_off), .cp_data(bc_data),
-        .irq_set({6'd0, nor_done, crc_done, 2'd0, mbx_irq, 5'd0}),
+        .irq_set({10'd0, mbx_irq, 1'b0, usb_irq, 3'd0}),
         .lpc_ctrl(lpc_ctrl), .bank_base(bank_base), .bank_size(bank_size),
         .bootctl_base(bootctl_base), .port_vals(bc_vals), .armed(armed), .irq(irq)
     );
@@ -253,18 +261,32 @@ module top_lpc_com (
         .io_addr_nxt(io_addr_nxt), .io_rd(io_rd), .io_wr(io_wr), .io_wdata(io_wdata),
         .io_hit(mbx_io_hit), .io_rdata(mbx_io_rdata)
     );
-    wire l_nbuf = (l_space == 3'd3) && (l_addr[7:0] == 8'h03);
-    nor_ctrl u_nor (
+    flash_share u_fs (
         .clk(clk), .wr(l_wr && l_space == 3'd0), .addr(l_addr[15:0]), .wdata(l_wdata),
-        .rdata(nor_rdata), .hit(nor_hit),
-        .b_wr(l_wr && l_nbuf), .b_rd(l_rd && l_nbuf), .b_rdata(nor_bdata), .b_idle(l_idle),
-        .lpc_req(req), .lreset_n(lrst_s[1]), .park(nor_park), .parked(s_parked),
-        .own(nor_own), .f_cs_n(n_cs_n), .f_sck(n_sck), .f_mosi(n_mosi), .f_miso(flash_miso),
-        .busy(nor_busy), .nor_done(nor_done), .crc_done(crc_done)
+        .rdata(fs_rdata), .hit(fs_hit),
+        .served_pulse(served_pulse), .lreset_n(lrst_s[1]), .grant(fs_grant),
+        .lclk(lpc_clk), .hold_l(fs_hold),
+        .req(req), .ack(ack), .ack_data(ack_data),
+        .s_req(s_req), .s_ack(s_ack), .s_data(s_data)
     );
-    assign l_rdata = l_mbx ? mbx_fdata : l_nbuf ? nor_bdata : (l_space != 3'd0) ? 8'h00 :
-                     bank_hit ? bank_rdata : mbx_hit ? mbx_rdata :
-                     nor_hit ? nor_rdata : reg_rdata;
+    // ------------------------------------------------------------ USB
+    usb_core u_usb (
+        .clk48(clk48), .clk(clk), .rst(rst),
+        .dp_in(usb_dp), .dn_in(usb_dn), .dp_out(usb_dp_o), .dn_out(usb_dn_o), .oe(usb_oe),
+        .pu_en(usb_pu_en),
+        .wr(l_wr && l_space == 3'd0), .addr(l_addr[15:0]), .wdata(l_wdata),
+        .rdata(usb_rdata), .hit(usb_hit),
+        .b1_wr(l_wr && l_space == 3'd1), .b1_addr(l_addr[11:0]), .b1_rdata(usb_bdata),
+        .irq_pulse(usb_irq), .irq_level(usb_irq_lvl)
+    );
+    assign usb_dp = usb_oe ? usb_dp_o : 1'bz;
+    assign usb_dn = usb_oe ? usb_dn_o : 1'bz;
+    assign usb_pu = usb_pu_en ? 1'b1 : 1'bz;
+
+    assign l_rdata = l_mbx ? mbx_fdata : (l_space == 3'd1) ? usb_bdata :
+                     (l_space != 3'd0) ? 8'h00 :
+                     bank_hit ? bank_rdata : mbx_hit ? mbx_rdata : fs_hit ? fs_rdata :
+                     usb_hit ? usb_rdata : reg_rdata;
 
     // ------------------------------------------------------------ LED
     reg [21:0] act = 0, com_act = 0;

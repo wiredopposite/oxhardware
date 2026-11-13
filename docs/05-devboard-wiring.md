@@ -53,7 +53,7 @@ ESP32 strapping pins (IO0, IO2, IO5, IO12, IO15) are not used, so an unconfigure
 | LFRAME# sense | 23 | |
 | 3.3 V sense | 38 | 10 kΩ series, 100 kΩ to GND |
 | COM UART TX / RX | 2 / 46 | Debug Probe (kernel debugger) |
-| USB D+ / D− | 19 / 18 | 27 Ω each, to the console's USB port; `lpc_usb` only |
+| USB D+ / D− | 19 / 18 | 27 Ω each, to the console's USB port; `lpc_com` |
 | USB pull-up | 13 | 1.5 kΩ from pin 13 to D+ (driven high = attached) |
 | ESP32 UART0 | devkit USB | `oxctl`, 921600 |
 

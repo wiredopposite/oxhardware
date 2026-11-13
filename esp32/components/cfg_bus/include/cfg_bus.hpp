@@ -25,7 +25,12 @@ int64_t Release(uint32_t timeout_ms = 1000);
 // then releases. Returns 0xFF if currently held.
 uint8_t Probe(uint8_t id[3]);
 
-// Flash operations; only valid while held.
+// Takes the SPI bus with the FPGA running, once its design has let go of the flash pins
+// (Nor asks it to over the link); Give() floats the bus again after the flash is idle.
+bool Take();
+void Give();
+
+// Flash operations; only valid while held or taken.
 bool ReadId(uint8_t id[3]);
 bool Read(uint32_t addr, uint8_t *buf, size_t len);
 // Erases [addr, addr + len): addr and len multiples of 4 KB; 64 KB blocks where aligned.

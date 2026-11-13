@@ -17,6 +17,7 @@ module tb;
     reg        l_sck = 0, l_cs = 1, l_mosi = 0;
     wire       l_miso;
     wire       irq_n;
+    wire       usb_dp, usb_dn;
 
     // LAD: pulled up, driven by host or target. LFRAME#: host low or target pull-down.
     assign lad = host_oe ? host_lad : 4'bzzzz;
@@ -32,10 +33,11 @@ module tb;
         .v33_sense(1'b1), .lframe_sense(lframe_n),
         .flash_csn(f_cs), .flash_sck(f_sck), .flash_mosi(f_mosi), .flash_miso(f_miso),
         .link_sck(l_sck), .link_cs_n(l_cs), .link_mosi(l_mosi), .link_miso(l_miso),
-        .fpga_irq_n(irq_n)
+        .fpga_irq_n(irq_n),
+        .usb_dp(usb_dp), .usb_dn(usb_dn), .usb_pu()
     );
-    // NOR engine: shorter idle wait for simulation (100 us)
-    defparam dut.u_nor.QUIET_CLKS = 2400;
+    // Flash sharing: shorter quiet wait for simulation (100 us)
+    defparam dut.u_fs.QUIET_CLKS = 2400;
     spi_flash_model flash (.cs_n(f_cs), .sck(f_sck), .mosi(f_mosi), .miso(f_miso));
 
     always #15 lclk = ~lclk;                  // 33.3 MHz
@@ -44,6 +46,21 @@ module tb;
     integer i, reads = 0, errors = 0, timeouts = 0, waits_total = 0, wait_max = 0;
     integer lframe_low_seen = 0;
     reg [7:0] exp_x = 8'h00;                  // expected = image byte ^ exp_x (bank contents)
+    reg       exp_ff = 0;                     // expected = 0xFF (the flash is lent out)
+
+    // USB idle J
+    pullup (usb_dp); pulldown (usb_dn);
+
+    // The ESP32 on the config bus, only while it has the flash; CS# pulled up
+    reg  esp_own = 0, esp_cs = 1, esp_sck = 0, esp_mosi = 0;
+    assign f_cs   = esp_own ? esp_cs   : 1'bz;
+    assign f_sck  = esp_own ? esp_sck  : 1'bz;
+    assign f_mosi = esp_own ? esp_mosi : 1'bz;
+    pullup (f_cs);
+    always @(posedge lclk) if (esp_own && !dut.f_float) begin
+        $display("ERROR: FPGA and ESP32 both drive the flash at %0t", $time);
+        errors = errors + 1;
+    end
 
     task mem_read(input [31:0] a);
         integer k, w; reg [3:0] s; reg [7:0] d; reg done;
@@ -76,9 +93,10 @@ module tb;
                 reads = reads + 1;
                 waits_total = waits_total + w;
                 if (w > wait_max) wait_max = w;
-                if (d !== (bios[a[17:0]] ^ exp_x)) begin
+                if (d !== (exp_ff ? 8'hFF : bios[a[17:0]] ^ exp_x)) begin
                     errors = errors + 1;
-                    if (errors < 10) $display("MISMATCH at %h: got %h want %h", a, d, bios[a[17:0]] ^ exp_x);
+                    if (errors < 10) $display("MISMATCH at %h: got %h want %h", a, d,
+                                              exp_ff ? 8'hFF : bios[a[17:0]] ^ exp_x);
                 end
             end else begin
                 timeouts = timeouts + 1;
@@ -404,182 +422,118 @@ module tb;
         end
     endtask
 
-    // ---------------------------------------------------------------- NOR engine
-    task nor_wait;                              // until NOR_STATUS busy clears
-        begin
-            lbuf[0] = 8'h04;
-            while (lbuf[0] & 8'h04) begin #5_000; link_xfer(8'h80, 16'h00C0, 1); end
-        end
-    endtask
-    task nor_op(input [23:0] a, input [7:0] len_m1, input [7:0] op);
-        begin
-            lw(16'h00C8, a[7:0]); lw(16'h00C9, a[15:8]); lw(16'h00CA, a[23:16]);
-            lw(16'h00CC, len_m1);
-            lw(16'h00CB, op);
-        end
-    endtask
-    task nor_check(input [23:0] a, input integer n, input [7:0] xr);   // buffer vs mem ^ xr
+    // ---------------------------------------------------------------- flash sharing
+    // The tb plays the ESP32 on the config bus: it drives the flash nets once granted
+    task esp_byte(input [7:0] tx, output [7:0] rx);
         integer k;
         begin
-            nor_op(a, n - 1, 8'd5); nor_wait;
-            link_xfer(8'hB8, 16'h0003, n);
-            for (k = 0; k < n; k = k + 1)
-                if (lbuf[k] !== (flash.mem[a + k] ^ xr)) begin
-                    $display("ERROR: NOR read %h = %h, expected %h", a + k, lbuf[k], flash.mem[a + k] ^ xr);
-                    errors = errors + 1;
-                end
-        end
-    endtask
-    function [31:0] crc_mem(input [19:0] a, input integer n);
-        integer k, b; reg [31:0] c; reg [7:0] v;
-        begin
-            c = 32'hFFFFFFFF;
-            for (k = 0; k < n; k = k + 1) begin
-                v = flash.mem[a + k];
-                for (b = 0; b < 8; b = b + 1) begin
-                    c = (c[0] ^ v[b]) ? ((c >> 1) ^ 32'hEDB88320) : (c >> 1);
-                end
+            for (k = 7; k >= 0; k = k - 1) begin
+                esp_mosi = tx[k]; #50;
+                esp_sck = 1; rx[k] = f_miso; #50;
+                esp_sck = 0;
             end
-            crc_mem = ~c;
-        end
-    endfunction
-    task crc_check(input [23:0] a, input [23:0] n);
-        reg [31:0] want;
-        begin
-            want = crc_mem(a[19:0], n);
-            lw(16'h00D0, a[7:0]); lw(16'h00D1, a[15:8]); lw(16'h00D2, a[23:16]);
-            lw(16'h00D3, n[7:0]); lw(16'h00D4, n[15:8]); lw(16'h00D5, n[23:16]);
-            lw(16'h00D6, 8'h01);
         end
     endtask
-    task crc_expect(input [23:0] a, input [23:0] n);
-        reg [31:0] want;
+    task esp_cmd(input [7:0] c, input integer with_addr, input [23:0] a);
+        reg [7:0] r;
         begin
-            want = crc_mem(a[19:0], n);
-            nor_wait;
-            link_expect(8'h80, 16'h00D8, 4, want);
+            esp_cs = 0; #50;
+            esp_byte(c, r);
+            if (with_addr) begin esp_byte(a[23:16], r); esp_byte(a[15:8], r); esp_byte(a[7:0], r); end
         end
     endtask
-    task nor_tests;
-        integer k, t0, wmax0, pg, bad;
+    task esp_end; begin #50 esp_cs = 1; #100; end endtask
+    task esp_wait_ready;
+        reg [7:0] st;
         begin
-            // Idle after boot: the engine has woken the flash and read its ID
-            #200_000;
-            link_expect(8'h80, 16'h00C0, 1, 32'h01);            // init done, idle
-            link_expect(8'h80, 16'h00C2, 3, 32'h1640EF);
+            st = 8'h01;
+            while (st[0]) begin esp_cmd(8'h05, 0, 0); esp_byte(8'h00, st); esp_end; #2_000; end
+        end
+    endtask
+    task fs_tests;
+        integer k; reg [7:0] r;
+        begin
+            lr(16'h00C0, 8'h00); lr(16'h00C1, 8'h00);
 
-            // Read into the buffer
-            nor_check(24'h040000, 16, 8'h00);
-            nor_check(24'h080010, 40, 8'h00);
-
-            // Erase 4 K, program 16 bytes, then 100 (chunked) across a page's start
-            nor_op(24'h0F0000, 0, 8'd1); nor_wait;
-            nor_check(24'h0F0000, 16, 8'h00);
-            if (flash.mem[20'hF0000] !== 8'hFF || flash.mem[20'hF0FFF] !== 8'hFF) begin
-                $display("ERROR: erase 4 K"); errors = errors + 1;
-            end
-            for (k = 0; k < 16; k = k + 1) lbuf[k] = 8'h10 + k;
-            link_xfer(8'h38, 16'h0003, 16);
-            nor_op(24'h0F0010, 15, 8'd3); nor_wait;
-            for (k = 0; k < 16; k = k + 1)
-                if (flash.mem[20'hF0010 + k] !== 8'h10 + k) begin
-                    $display("ERROR: program %h = %h", 20'hF0010 + k, flash.mem[20'hF0010 + k]);
-                    errors = errors + 1;
-                end
-            for (k = 0; k < 63; k = k + 1) lbuf[k] = 8'h80 ^ k;
-            link_xfer(8'h38, 16'h0003, 63);
-            for (k = 0; k < 37; k = k + 1) lbuf[k] = 8'hC0 ^ k;
-            link_xfer(8'h38, 16'h0003, 37);              // a new transaction starts at 0
-            nor_op(24'h0F0100, 36, 8'd3); nor_wait;
-            for (k = 0; k < 37; k = k + 1)
-                if (flash.mem[20'hF0100 + k] !== (8'hC0 ^ k)) begin
-                    $display("ERROR: program %h = %h", 20'hF0100 + k, flash.mem[20'hF0100 + k]);
-                    errors = errors + 1;
-                end
-            if (flash.mem[20'hF0125] !== 8'hFF) begin $display("ERROR: programmed too far"); errors = errors + 1; end
-            nor_op(24'h0F00F0, 31, 8'd3);                // crosses a page: refused
-            link_expect(8'h80, 16'h00C0, 1, 32'h21);
-
-            // Bitstream area: refused unless unlocked, for one operation
-            nor_op(24'h010000, 0, 8'd1);
-            link_expect(8'h80, 16'h00C0, 1, 32'h21);
-            lw(16'h00CD, 8'h5A);
-            nor_op(24'h010000, 0, 8'd1); nor_wait;
-            link_expect(8'h80, 16'h00C0, 1, 32'h01);
-            nor_op(24'h011000, 0, 8'd1);
-            link_expect(8'h80, 16'h00C0, 1, 32'h21);
-
-            // CRC of slot 0, interrupted by BIOS reads: they wait for the engine, it
-            // continues afterwards, the result is right
-            lw(16'h0010, 8'hFF); lw(16'h0011, 8'hFF);
-            crc_check(24'h040000, 24'h001000);
-            #150_000;                                   // the engine holds the flash now
-            wmax0 = wait_max; wait_max = 0;
-            run(32'hFF000400, 16);
-            $display("NOR: BIOS reads during CRC, longest wait %0d clocks", wait_max);
-            crc_expect(24'h040000, 24'h001000);
-            link_expect(8'h80, 16'h0011, 1, 32'h01);    // CRC_DONE
-
-            // Erase 64 K, interrupted: suspended for the BIOS reads, resumed after
-            nor_op(24'h0E0000, 0, 8'd2);
+            // Asked while the console is reading: no grant until it has been quiet
+            lw(16'h00C0, 8'h01);
+            run(32'hFF000800, 8);
+            lr(16'h00C0, 8'h01);
+            if (dut.f_float) begin $display("ERROR: flash pins floated early"); errors = errors + 1; end
             #150_000;
+            lr(16'h00C0, 8'h03);
+            link_xfer(8'h80, 16'h00C0, 1);
+            if (lsts[0] !== 1'b1) begin $display("ERROR: STS %h: no grant bit", lsts); errors = errors + 1; end
+            if (!dut.f_float) begin $display("ERROR: flash pins still driven"); errors = errors + 1; end
+
+            // The ESP32 owns the flash: ID, read, erase 4 K, program
+            esp_own = 1;
+            esp_cmd(8'h9F, 0, 0);
+            for (k = 0; k < 3; k = k + 1) begin
+                esp_byte(8'h00, r);
+                if (r !== (k == 0 ? 8'hEF : k == 1 ? 8'h40 : 8'h16)) begin
+                    $display("ERROR: JEDEC byte %0d = %h", k, r); errors = errors + 1;
+                end
+            end
+            esp_end;
+            esp_cmd(8'h03, 1, 24'h040010);
+            for (k = 0; k < 8; k = k + 1) begin
+                esp_byte(8'h00, r);
+                if (r !== flash.mem[20'h40010 + k]) begin
+                    $display("ERROR: ESP32 read %h = %h", 20'h40010 + k, r); errors = errors + 1;
+                end
+            end
+            esp_end;
+            esp_cmd(8'h06, 0, 0); esp_end;
+            esp_cmd(8'h20, 1, 24'h0F0000); esp_end;
+
+            // BIOS reads meanwhile: 0xFF at once, counted
+            exp_ff = 1;
             wait_max = 0;
-            run(32'hFF000500, 16);
-            $display("NOR: BIOS reads during erase, longest wait %0d clocks, suspends %0d",
-                     wait_max, flash.suspends);
-            if (flash.suspends == 0) begin $display("ERROR: erase was not suspended"); errors = errors + 1; end
-            nor_wait;
-            if (flash.mem[20'hE0000] !== 8'hFF || flash.mem[20'hEFFFF] !== 8'hFF) begin
-                $display("ERROR: erase 64 K"); errors = errors + 1;
-            end
-            if (wmax0 > wait_max) wait_max = wmax0;
+            run(32'hFF000900, 4);
+            exp_ff = 0;
+            if (wait_max > 4) begin $display("ERROR: 0xFF answers waited %0d", wait_max); errors = errors + 1; end
+            lr(16'h00C1, 8'h04);
 
-            // Program 64 bytes (two chunks), interrupted by BIOS reads at every point
-            bad = 0;
-            nor_op(24'h0F1000, 0, 8'd1); nor_wait;
-            for (pg = 0; pg < 16; pg = pg + 1) begin
-                for (k = 0; k < 64; k = k + 1) lbuf[k] = 8'h40 ^ k ^ pg;
-                link_xfer(8'h38, 16'h0003, 64);
-                nor_op({12'h0F1, pg[3:0], 8'h00}, 63, 8'd3);
-                #(pg * 3_000);
-                run(32'hFF000700, 4);
-                nor_wait;
-                t0 = bad;
-                for (k = 0; k < 64; k = k + 1)
-                    if (flash.mem[{8'h0F, 4'h1, pg[3:0], 8'h00} + k] !== (8'h40 ^ k ^ pg)) begin
-                        if (bad == t0) $display("NOR: page %0d first wrong +%0d = %h (want %h)", pg, k,
-                            flash.mem[{8'h0F, 4'h1, pg[3:0], 8'h00} + k], 8'h40 ^ k ^ pg);
-                        bad = bad + 1;
-                    end
-                if (bad != t0) $display("NOR: page %0d: %0d wrong", pg, bad - t0);
+            esp_wait_ready;
+            esp_cmd(8'h06, 0, 0); esp_end;
+            esp_cmd(8'h02, 1, 24'h0F0020);
+            for (k = 0; k < 16; k = k + 1) esp_byte(8'hA0 ^ k, r);
+            esp_end;
+            esp_wait_ready;
+            if (flash.mem[20'hF0000] !== 8'hFF || flash.mem[20'hF0FFF] !== 8'hFF) begin
+                $display("ERROR: ESP32 erase"); errors = errors + 1;
             end
-            $display("NOR: programs interrupted by BIOS reads, %0d bytes wrong", bad);
-            if (bad) errors = errors + 1;
-
-            // Lost commands: a WREN or a program the flash ignores is sent again
-            lw(16'h00DC, 8'h00);
-            for (k = 0; k < 64; k = k + 1) lbuf[k] = 8'h5C ^ k;
-            link_xfer(8'h38, 16'h0003, 64);
-            flash.drop_wren = 2; flash.drop_prog = 1;
-            nor_op(24'h0F0200, 63, 8'd3); nor_wait;
-            for (k = 0; k < 64; k = k + 1)
-                if (flash.mem[20'hF0200 + k] !== (8'h5C ^ k)) begin
-                    $display("ERROR: retried program %h = %h", 20'hF0200 + k, flash.mem[20'hF0200 + k]);
+            for (k = 0; k < 16; k = k + 1)
+                if (flash.mem[20'hF0020 + k] !== (8'hA0 ^ k)) begin
+                    $display("ERROR: ESP32 program %h = %h", 20'hF0020 + k, flash.mem[20'hF0020 + k]);
                     errors = errors + 1;
                 end
-            link_expect(8'h80, 16'h00C0, 1, 32'h01);
-            link_expect(8'h80, 16'h00DC, 2, 32'h0102);    // 2 WRENs, 1 program
-            // One that never takes: refused after MAX_TRIES
-            flash.drop_prog = 100;
-            link_xfer(8'h38, 16'h0003, 8);
-            nor_op(24'h0F0300, 7, 8'd3); nor_wait;
-            link_expect(8'h80, 16'h00C0, 1, 32'h21);
-            link_expect(8'h80, 16'h00DD, 1, 32'h09);       // 1 earlier + 8 tries
-            flash.drop_prog = 0;
 
-            // Console in reset: the engine works without waiting for BIOS reads to stop
-            lrst_n = 0; #150_000;
-            nor_check(24'h040100, 8, 8'h00);
+            // Given back: BIOS reads served again, the count clears
+            esp_own = 0;
+            lw(16'h00C0, 8'h00);
+            lr(16'h00C0, 8'h00);
+            run(32'hFF000A00, 16);
+            lw(16'h00C1, 8'h00);
+            lr(16'h00C1, 8'h00);
+
+            // Console in reset: granted without waiting; it boots normally afterwards
+            lrst_n = 0; #5_000;
+            lw(16'h00C0, 8'h01);
+            #2_000;
+            lr(16'h00C0, 8'h03);
+            esp_own = 1;
+            esp_cmd(8'h03, 1, 24'h040100);
+            for (k = 0; k < 4; k = k + 1) begin
+                esp_byte(8'h00, r);
+                if (r !== flash.mem[20'h40100 + k]) begin
+                    $display("ERROR: ESP32 read in reset %h = %h", 20'h40100 + k, r); errors = errors + 1;
+                end
+            end
+            esp_end;
+            esp_own = 0;
+            lw(16'h00C0, 8'h00);
             console_reset;
             run(32'hFF000600, 8);
 
@@ -748,7 +702,7 @@ module tb;
             $display("ERROR: link STS %h, expected 60", lsts); errors = errors + 1;
         end
         link_expect(8'h80, 16'h0021, 1, 32'h05);                 // LRESET# high, served
-        link_expect(8'h80, 16'h0007, 3, 32'h006F01);             // BOARD_ID, FEATURES
+        link_expect(8'h80, 16'h0007, 3, 32'h025F01);             // BOARD_ID, FEATURES
         LHALF = 2000;                                            // 250 kHz
         link_expect(8'h80, 16'h0000, 4, "GFXO");
         link_expect(8'h80, 16'h000C, 4, 32'h44332211);
@@ -768,7 +722,7 @@ module tb;
 
         bank_tests;
         mbx_tests;
-        nor_tests;
+        fs_tests;
 
         $display("reads=%0d errors=%0d timeouts=%0d max_wait=%0d uart_out=%0d",
                  reads, errors, timeouts, wait_max, ngot);
@@ -777,10 +731,11 @@ module tb;
     end
 endmodule
 
-module upduino31_clocks #(parameter [2:0] DIVQ = 3'b100) (
-    input wire clk12, output reg clk_sys = 0, output wire pll_locked, output wire rst,
-    output reg clk_lf = 0);
-    always #20.833 clk_sys = ~clk_sys;
+module upduino31_clocks #(parameter [2:0] DIVQ = 3'b100, parameter DUAL = 0) (
+    input wire clk12, output reg clk_sys = 0, output reg clk_2x = 0, output wire pll_locked,
+    output wire rst, output reg clk_lf = 0);
+    always #10.4167 clk_2x = ~clk_2x;
+    always @(posedge clk_2x) clk_sys <= ~clk_sys;
     always #50000  clk_lf  = ~clk_lf;
     assign pll_locked = 1'b1;
     reg [3:0] r = 0;

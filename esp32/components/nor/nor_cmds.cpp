@@ -1,4 +1,4 @@
-// nor command group: the FPGA's flash through its NOR engine, with the FPGA running.
+// nor command group: the FPGA's flash, borrowed from the running FPGA.
 
 #include "host_link.hpp"
 #include "nor.hpp"

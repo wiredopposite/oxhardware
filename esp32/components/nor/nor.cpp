@@ -1,7 +1,5 @@
 #include "nor.hpp"
 
-#include <cstring>
-
 #include "cfg_bus.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -18,36 +16,22 @@ const char *Tag = "nor";
 
 using FpgaLink::Space;
 
-// Link registers, docs/01-interface.md §5.5
-constexpr uint16_t RegStatus = 0x00C0;
-constexpr uint16_t RegJedec = 0x00C2;
-constexpr uint16_t RegAddr = 0x00C8;      // 3 bytes, then NOR_OP at 0xCB
-constexpr uint16_t RegLen = 0x00CC;
-constexpr uint16_t RegCrcAddr = 0x00D0;   // 3 bytes address, 3 bytes length, CRC_CTRL
-constexpr uint16_t RegCrc = 0x00D8;
-constexpr uint16_t RegMiss = 0x00DC;    // WRENs and commands the flash didn't take
-constexpr uint32_t BufferPort = 0x03;     // SPACE 3
+// docs/01-interface.md §5.5
+constexpr uint16_t RegFeatures = 0x0008;
+constexpr uint16_t RegFlashCtrl = 0x00C0;     // bit0 REQ, bit1 GRANT
+constexpr uint16_t RegFlashMiss = 0x00C1;
+constexpr uint16_t FeatureFlashShare = 1u << 9;
+constexpr uint8_t CtrlReq = 0x01;
+constexpr uint8_t CtrlGrant = 0x02;
 
-constexpr uint8_t StInit = 0x01;
-constexpr uint8_t StBusy = 0x04;
-constexpr uint8_t StRefused = 0x20;
+// The FPGA grants the flash once the console has gone 1 ms without reading it; a boot
+// reads it for about half a second
+constexpr int64_t GrantTimeoutUs = 3 * 1000 * 1000;
 
-enum class Op : uint8_t {
-    Erase4K = 1,
-    Erase64K = 2,
-    Program = 3,
-    Read = 5,
-};
-
-constexpr size_t Page = 256;
-constexpr uint32_t Block = 64 * 1024;
 constexpr uint32_t Sector = 4 * 1024;
 
-// Ops wait for the console to leave the flash alone for 1 ms (a boot reads it for about
-// half a second), and BIOS reads suspend erases and programs on top of that.
-constexpr int64_t TimeoutUs = 10 * 1000 * 1000;
-
 SemaphoreHandle_t Lock;
+uint32_t ProtectEnd;        // the bitstream area: erase and program refused below it
 
 class Guard {
 public:
@@ -55,57 +39,94 @@ public:
     ~Guard() { xSemaphoreGive(Lock); }
 };
 
-bool Status(uint8_t &st)
+bool HasShare()
 {
-    return FpgaLink::Read(Space::Regs, RegStatus, &st, 1);
+    uint8_t f[2];
+    return FpgaLink::Read(Space::Regs, RegFeatures, f, sizeof(f)) && f[0] != 0xFF &&
+           ((f[0] | f[1] << 8) & FeatureFlashShare);
 }
 
-// Waits for the engine to go idle; false on a timeout or a refused op
-bool Wait()
+void Ask(bool want)
 {
-    const int64_t start = esp_timer_get_time();
-    for (int polls = 0;; polls++) {
-        uint8_t st;
-        if (!Status(st)) {
-            return false;
+    const uint8_t v = want ? CtrlReq : 0;
+    FpgaLink::Write(Space::Regs, RegFlashCtrl, &v, 1);
+}
+
+// The flash for one operation: held (FPGA in reset) as it is, or borrowed from the
+// running FPGA for the scope's lifetime
+class Access {
+public:
+    Access()
+    {
+        if (CfgBus::Held()) {
+            ok_ = true;
+            return;
         }
-        if (!(st & StBusy)) {
-            if (st & StRefused) {
-                ESP_LOGW(Tag, "op refused");
-                return false;
+        if (!HasShare()) {
+            ESP_LOGE(Tag, "FPGA design can't lend the flash");
+            return;
+        }
+        Ask(true);
+        const int64_t start = esp_timer_get_time();
+        for (;;) {
+            uint8_t st;
+            if (FpgaLink::Read(Space::Regs, RegFlashCtrl, &st, 1) && (st & CtrlGrant)) {
+                break;
             }
-            return true;
+            if (esp_timer_get_time() - start > GrantTimeoutUs) {
+                ESP_LOGE(Tag, "FPGA didn't grant the flash");
+                Ask(false);
+                return;
+            }
+            vTaskDelay(1);
         }
-        if (esp_timer_get_time() - start > TimeoutUs) {
-            ESP_LOGE(Tag, "engine busy for %d s", int(TimeoutUs / 1000000));
-            return false;
+        if (!CfgBus::Take()) {
+            Ask(false);
+            return;
         }
-        if (polls > 32) {
-            vTaskDelay(1);                  // an erase, or the console booting
+        borrowed_ = true;
+        ok_ = true;
+    }
+    ~Access()
+    {
+        if (!borrowed_) {
+            return;
+        }
+        CfgBus::Give();
+        Ask(false);
+        uint8_t miss;
+        if (FpgaLink::Read(Space::Regs, RegFlashMiss, &miss, 1) && miss != 0) {
+            ESP_LOGW(Tag, "console read the flash %u times while it was lent (got 0xFF)", miss);
+            const uint8_t zero = 0;
+            FpgaLink::Write(Space::Regs, RegFlashMiss, &zero, 1);
         }
     }
-}
+    bool Ok() const { return ok_; }
+    bool Held() const { return ok_ && !borrowed_; }
 
-bool Start(Op op, uint32_t addr, size_t len)
-{
-    const uint8_t n = uint8_t(len - 1);
-    const uint8_t regs[4] = {uint8_t(addr), uint8_t(addr >> 8), uint8_t(addr >> 16),
-                             uint8_t(op)};
-    // NOR_LEN first: the op starts as NOR_OP is written
-    return FpgaLink::Write(Space::Regs, RegLen, &n, 1) &&
-           FpgaLink::Write(Space::Regs, RegAddr, regs, 4) && Wait();
-}
+private:
+    bool ok_ = false;
+    bool borrowed_ = false;
+};
 
-bool ReadChunk(uint32_t addr, uint8_t *buf, size_t len)
+// The bitstream area ends at the catalogue (§6.1): parts up to 4 MB use the small layout
+bool Protected(const Access &a, uint32_t addr)
 {
-    return Start(Op::Read, addr, len) &&
-           FpgaLink::Read(Space::Fifos, BufferPort, buf, len, nullptr, true);
-}
-
-bool ProgramChunk(uint32_t addr, const uint8_t *data, size_t len)
-{
-    return FpgaLink::Write(Space::Fifos, BufferPort, data, len, nullptr, true) &&
-           Start(Op::Program, addr, len);
+    if (a.Held()) {
+        return false;           // factory and recovery writes
+    }
+    if (ProtectEnd == 0) {
+        uint8_t id[3];
+        if (!CfgBus::ReadId(id) || id[2] < 0x14 || id[2] > 0x19) {
+            return true;
+        }
+        ProtectEnd = (1u << id[2]) <= 4 * 1024 * 1024 ? 0x022000 : 0x042000;
+    }
+    if (addr < ProtectEnd) {
+        ESP_LOGW(Tag, "%06lX is in the bitstream area", (unsigned long)addr);
+        return true;
+    }
+    return false;
 }
 
 }
@@ -117,40 +138,21 @@ void Init()
 
 bool Ready()
 {
-    if (CfgBus::Held()) {
-        return true;
-    }
-    uint8_t st;
-    return Status(st) && (st & StInit) && !(st & StBusy);
+    return CfgBus::Held() || HasShare();
 }
 
 bool ReadId(uint8_t id[3])
 {
     Guard g;
-    if (CfgBus::Held()) {
-        return CfgBus::ReadId(id);
-    }
-    uint8_t st;
-    return Status(st) && (st & StInit) && FpgaLink::Read(Space::Regs, RegJedec, id, 3);
+    Access a;
+    return a.Ok() && CfgBus::ReadId(id);
 }
 
 bool Read(uint32_t addr, uint8_t *buf, size_t len)
 {
     Guard g;
-    if (CfgBus::Held()) {
-        return CfgBus::Read(addr, buf, len);
-    }
-    while (len) {
-        const size_t n = len < Page ? len : Page;
-        if (!ReadChunk(addr, buf, n)) {
-            ESP_LOGE(Tag, "read at %06lX failed", (unsigned long)addr);
-            return false;
-        }
-        addr += n;
-        buf += n;
-        len -= n;
-    }
-    return true;
+    Access a;
+    return a.Ok() && CfgBus::Read(addr, buf, len);
 }
 
 bool Erase(uint32_t addr, uint32_t len)
@@ -159,62 +161,27 @@ bool Erase(uint32_t addr, uint32_t len)
         return false;
     }
     Guard g;
-    if (CfgBus::Held()) {
-        return CfgBus::Erase(addr, len);
+    Access a;
+    if (!a.Ok() || Protected(a, addr)) {
+        return false;
     }
-    while (len) {
-        const bool big = !(addr & (Block - 1)) && len >= Block;
-        if (!Start(big ? Op::Erase64K : Op::Erase4K, addr, 1)) {
-            ESP_LOGE(Tag, "erase at %06lX failed", (unsigned long)addr);
-            return false;
-        }
-        const uint32_t n = big ? Block : Sector;
-        addr += n;
-        len -= n;
+    if (!CfgBus::Erase(addr, len)) {
+        ESP_LOGE(Tag, "erase at %06lX failed", (unsigned long)addr);
+        return false;
     }
     return true;
-}
-
-namespace {
-constexpr int ProgramTries = 3;
-uint8_t Verify[Page];
 }
 
 bool Write(uint32_t addr, const uint8_t *data, size_t len)
 {
     Guard g;
-    if (CfgBus::Held()) {
-        return CfgBus::Write(addr, data, len);
+    Access a;
+    if (!a.Ok() || Protected(a, addr)) {
+        return false;
     }
-    while (len) {
-        const size_t room = Page - (addr & (Page - 1));
-        const size_t n = len < room ? len : room;
-        // Each page is read back. Programming only clears bits, so a piece that didn't
-        // take is programmed again over itself.
-        int tries = 0;
-        for (;;) {
-            if (!ProgramChunk(addr, data, n) || !ReadChunk(addr, Verify, n)) {
-                ESP_LOGE(Tag, "program at %06lX failed", (unsigned long)addr);
-                return false;
-            }
-            if (!memcmp(Verify, data, n)) {
-                break;
-            }
-            if (++tries == ProgramTries) {
-                ESP_LOGE(Tag, "program at %06lX doesn't verify", (unsigned long)addr);
-                return false;
-            }
-            ESP_LOGW(Tag, "program at %06lX didn't verify, again", (unsigned long)addr);
-        }
-        addr += n;
-        data += n;
-        len -= n;
-    }
-    uint8_t miss[2];
-    if (FpgaLink::Read(Space::Regs, RegMiss, miss, 2) && (miss[0] || miss[1])) {
-        ESP_LOGW(Tag, "flash ignored %u WREN and %u program commands, sent again", miss[0], miss[1]);
-        const uint8_t zero = 0;
-        FpgaLink::Write(Space::Regs, RegMiss, &zero, 1);
+    if (!CfgBus::Write(addr, data, len)) {
+        ESP_LOGE(Tag, "program at %06lX failed", (unsigned long)addr);
+        return false;
     }
     return true;
 }
@@ -225,18 +192,8 @@ bool Crc32(uint32_t addr, uint32_t len, uint32_t *crc)
         return false;
     }
     Guard g;
-    if (CfgBus::Held()) {
-        return CfgBus::Crc32(addr, len, crc);
-    }
-    const uint8_t regs[7] = {uint8_t(addr), uint8_t(addr >> 8), uint8_t(addr >> 16),
-                             uint8_t(len),  uint8_t(len >> 8),  uint8_t(len >> 16), 1};
-    uint8_t r[4];
-    if (!FpgaLink::Write(Space::Regs, RegCrcAddr, regs, 7) || !Wait() ||
-        !FpgaLink::Read(Space::Regs, RegCrc, r, 4)) {
-        return false;
-    }
-    *crc = r[0] | r[1] << 8 | r[2] << 16 | uint32_t(r[3]) << 24;
-    return true;
+    Access a;
+    return a.Ok() && CfgBus::Crc32(addr, len, crc);
 }
 
 }

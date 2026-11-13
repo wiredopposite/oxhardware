@@ -32,7 +32,7 @@ constexpr uint8_t CmdWake = 0xAB;
 constexpr uint8_t StatusBusy = 0x01;
 
 spi_device_handle_t Dev;
-bool IsHeld = false;
+bool IsHeld = false, IsTaken = false;
 // CPU transfers only (no DMA): freeing a DMA-enabled bus on release disturbs the link's
 // DMA channel. The hardware buffer holds 64 bytes, so longer transfers are chunked with
 // CS# held low.
@@ -117,6 +117,49 @@ void SetAddr(uint8_t cmd, uint32_t addr)
     TxBuf[3] = uint8_t(addr);
 }
 
+bool Owned()
+{
+    return IsHeld || IsTaken;
+}
+
+// SPI master on the config bus, CS# a GPIO; the flash woken
+bool BusOpen()
+{
+    gpio_reset_pin(Pins::CfgCs);
+    gpio_set_level(Pins::CfgCs, 1);
+    gpio_set_direction(Pins::CfgCs, GPIO_MODE_OUTPUT);
+
+    spi_bus_config_t bus = {};
+    bus.mosi_io_num = Pins::CfgMosi;
+    bus.miso_io_num = Pins::CfgMiso;
+    bus.sclk_io_num = Pins::CfgSck;
+    bus.quadwp_io_num = -1;
+    bus.quadhd_io_num = -1;
+    bus.max_transfer_sz = Chunk;
+    if (spi_bus_initialize(Host, &bus, SPI_DMA_DISABLED) != ESP_OK) {
+        ESP_LOGE(Tag, "spi_bus_initialize failed");
+        PinsFloat();
+        return false;
+    }
+    spi_device_interface_config_t dev = {};
+    dev.mode = 0;
+    dev.clock_speed_hz = ClockHz;
+    dev.spics_io_num = -1;
+    dev.queue_size = 1;
+    spi_bus_add_device(Host, &dev, &Dev);
+
+    Simple(CmdWake);
+    esp_rom_delay_us(50);
+    return true;
+}
+
+void BusClose()
+{
+    spi_bus_remove_device(Dev);
+    spi_bus_free(Host);
+    PinsFloat();
+}
+
 }
 
 void Init()
@@ -145,45 +188,26 @@ bool Hold()
     if (IsHeld) {
         return true;
     }
-    gpio_set_level(Pins::FpgaCreset, 0);
-    esp_rom_delay_us(1000);                    // FPGA releases its pins
-
-    gpio_reset_pin(Pins::CfgCs);
-    gpio_set_level(Pins::CfgCs, 1);
-    gpio_set_direction(Pins::CfgCs, GPIO_MODE_OUTPUT);
-
-    spi_bus_config_t bus = {};
-    bus.mosi_io_num = Pins::CfgMosi;
-    bus.miso_io_num = Pins::CfgMiso;
-    bus.sclk_io_num = Pins::CfgSck;
-    bus.quadwp_io_num = -1;
-    bus.quadhd_io_num = -1;
-    bus.max_transfer_sz = Chunk;
-    if (spi_bus_initialize(Host, &bus, SPI_DMA_DISABLED) != ESP_OK) {
-        ESP_LOGE(Tag, "spi_bus_initialize failed");
-        gpio_set_level(Pins::FpgaCreset, 1);
-        PinsFloat();
+    if (IsTaken) {
         return false;
     }
-    spi_device_interface_config_t dev = {};
-    dev.mode = 0;
-    dev.clock_speed_hz = ClockHz;
-    dev.spics_io_num = -1;
-    dev.queue_size = 1;
-    spi_bus_add_device(Host, &dev, &Dev);
+    gpio_set_level(Pins::FpgaCreset, 0);
+    esp_rom_delay_us(1000);                    // FPGA releases its pins
+    if (!BusOpen()) {
+        gpio_set_level(Pins::FpgaCreset, 1);
+        return false;
+    }
     IsHeld = true;
-
-    Simple(CmdWake);
-    esp_rom_delay_us(50);
     return true;
 }
 
 int64_t Release(uint32_t timeout_ms)
 {
+    if (IsTaken) {
+        return -1;
+    }
     if (IsHeld) {
-        spi_bus_remove_device(Dev);
-        spi_bus_free(Host);
-        PinsFloat();
+        BusClose();
         IsHeld = false;
     }
     const int64_t start = esp_timer_get_time();
@@ -198,9 +222,28 @@ int64_t Release(uint32_t timeout_ms)
     return -1;
 }
 
+bool Take()
+{
+    if (IsHeld || IsTaken) {
+        return false;
+    }
+    IsTaken = BusOpen();
+    return IsTaken;
+}
+
+void Give()
+{
+    if (!IsTaken) {
+        return;
+    }
+    WaitReady(3000, true);                     // never hand back a busy flash
+    BusClose();
+    IsTaken = false;
+}
+
 uint8_t Probe(uint8_t id[3])
 {
-    if (IsHeld) {
+    if (IsHeld || IsTaken) {
         return 0xFF;
     }
     gpio_set_level(Pins::FpgaCreset, 0);
@@ -245,7 +288,7 @@ uint8_t Probe(uint8_t id[3])
 
 bool ReadId(uint8_t id[3])
 {
-    if (!IsHeld) {
+    if (!Owned()) {
         return false;
     }
     memset(TxBuf, 0, 4);
@@ -259,7 +302,7 @@ bool ReadId(uint8_t id[3])
 
 bool Read(uint32_t addr, uint8_t *buf, size_t len)
 {
-    if (!IsHeld) {
+    if (!Owned()) {
         return false;
     }
     while (len) {
@@ -279,7 +322,7 @@ bool Read(uint32_t addr, uint8_t *buf, size_t len)
 
 bool Erase(uint32_t addr, uint32_t len)
 {
-    if (!IsHeld || (addr & 0xFFF) || (len & 0xFFF)) {
+    if (!Owned() || (addr & 0xFFF) || (len & 0xFFF)) {
         return false;
     }
     while (len) {
@@ -300,7 +343,7 @@ bool Erase(uint32_t addr, uint32_t len)
 
 bool Write(uint32_t addr, const uint8_t *data, size_t len)
 {
-    if (!IsHeld) {
+    if (!Owned()) {
         return false;
     }
     while (len) {

@@ -110,7 +110,7 @@ Power the UPduino (USB) before the console and switch the console off first. Gro
 | C | UPduino serving from its flash (`lpc_serve`) with the LFRAME# switch | Boot a ROM on a 1.6 | Done |
 | D | + COM 16550 and Super I/O (`lpc_com`) | Devkit kernel debugger on the PC | Done (WinDbg over the UART) |
 | E | + boot config, ESP32 devkit on the link pins and config bus | ESP32 programs flash, resets FPGA, link at 20 MHz; bank switching (wiring: 05-devboard-wiring) | |
-| F | + controller-port pigtail, USB device (`lpc_usb`) | XID enumeration behind the emulated hub; BT playing | |
+| F | + controller-port pigtail, USB device (`lpc_com`) | XID enumeration behind the emulated hub; BT playing | |
 | G | Custom PCB v1 | Everything; 1.0–1.5 via D0; SD; LCD | |
 
 An **LPC host emulator** (e.g. an RP2040/RP2350 PIO program or a second FPGA) that issues scripted LPC cycles would let the target be regression-tested on the bench without a console.

@@ -6,7 +6,7 @@ Single source of truth for everything crossing the ESP32/FPGA boundary, plus the
 
 ### 1.1 Config bus (shared: FPGA config pins, QSPI NOR, ESP32 HSPI)
 
-| Net | FPGA pin | NOR pin | ESP32 | Normal operation | ESP32 owns bus (FPGA in reset) |
+| Net | FPGA pin | NOR pin | ESP32 | Normal operation | ESP32 owns bus (FPGA in reset, or flash lent §5.5) |
 |---|---|---|---|---|---|
 | `CFG_SCK` | `SPI_SCK` | CLK | HSPI SCK | FPGA drives | ESP32 drives |
 | `CFG_SS_N` | `SPI_SS_B` | CS# | GPIO | FPGA drives | ESP32 drives |
@@ -14,7 +14,7 @@ Single source of truth for everything crossing the ESP32/FPGA boundary, plus the
 | `CFG_SI` (NOR→FPGA) | `SPI_SI` | DO/IO1 | HSPI MISO | NOR drives | NOR drives |
 | `NOR_IO2`, `NOR_IO3` | user I/O | WP#/IO2, HOLD#/IO3 | — (pull-ups) | FPGA (quad) | Hi-Z, pulled up |
 
-SO/SI are named from the FPGA's SPI-master view (UP5K-SG48 pins: SCK 15, SS 16, SO 14, SI 17). The ESP32 keeps all its config-bus pins **Hi-Z unless it is holding `CRESET_B` low**. Series resistors (~33 Ω) on the ESP32 side limit damage from a contention bug.
+SO/SI are named from the FPGA's SPI-master view (UP5K-SG48 pins: SCK 15, SS 16, SO 14, SI 17). The ESP32 keeps all its config-bus pins **Hi-Z unless it is holding `CRESET_B` low or the FPGA has granted it the flash** (§5.5). Series resistors (~33 Ω) on the ESP32 side limit damage from a contention bug.
 
 ### 1.2 Link and control
 
@@ -38,7 +38,7 @@ Power-up → FPGA reads its bitstream from NOR offset 0 in SPI master mode → u
 3. ESP32 returns all config-bus pins to Hi-Z, `CRESET_N = 1` → FPGA reboots from NOR (normal mode).
 4. Check `CDONE` within 200 ms; then `ID` over the link.
 
-Used for: bitstream updates (write region, verify, reboot), unbricking (golden bitstream kept in ESP32 flash), and bulk ROM writes when the console is off (faster than through the FPGA). While the console is running, ROM writes go **through** the FPGA (§5.5) so LPC keeps being served.
+Used for: bitstream updates (write region, verify, reboot) and unbricking (golden bitstream kept in ESP32 flash). Everything else, ROM writes included, borrows the flash from the running FPGA (§5.5) with the same commands, so the FPGA stays configured.
 
 ### 2.3 ESP32 slave-configures the FPGA (fallback / development)
 
@@ -74,7 +74,7 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 | 3 | iotrap event FIFO non-empty |
 | 2 | Mailbox / COM-to-ESP32 RX non-empty |
 | 1 | `ERR_STATUS != 0` |
-| 0 | NOR engine busy (§5.5) |
+| 0 | Flash lent to the ESP32 (`FLASH_CTRL.GRANT`, §5.5) |
 
 **Dummy bytes `D`**: 1 in every space.
 
@@ -86,8 +86,8 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 |---|---|
 | 0 | Registers (§5), 8-bit, `A[15:0]` |
 | 1 | USB buffers and tables (§5.9) |
-| 2 | Reserved (the flash is read through the NOR engine, §5.5) |
-| 3 | FIFO ports (use `NOINC`): `0x00` COM (when routed to ESP32), `0x01` mailbox, `0x02` iotrap events (read-only, 4 bytes/event), `0x03` NOR buffer (256 B; every transaction starts at offset 0) |
+| 2 | Reserved (the ESP32 reads the flash itself, §5.5) |
+| 3 | FIFO ports (use `NOINC`): `0x00` COM (when routed to ESP32), `0x01` mailbox, `0x02` iotrap events (read-only, 4 bytes/event) |
 | 4–7 | Reserved |
 
 ## 5. Register map (SPACE 0)
@@ -101,10 +101,10 @@ Used for: bitstream updates (write region, verify, reboot), unbricking (golden b
 | 0x00–0x03 | `ID` | RO | `'O','X','F','G'` |
 | 0x04–0x06 | `VERSION` | RO | major, minor, patch |
 | 0x07 | `BOARD_ID` | RO | Pin-map variant |
-| 0x08–0x09 | `FEATURES` | RO | bit0 LPC mem, 1 COM, 2 Super I/O, 3 mailbox, 4 USB, 5 CRC, 6 LFRAME abort, 7 iotrap, 8 flash emu, 9 reserved, 10 bank map, 11 quad NOR (0 = single/dual-SPI board, e.g. UPduino) |
+| 0x08–0x09 | `FEATURES` | RO | bit0 LPC mem, 1 COM, 2 Super I/O, 3 mailbox, 4 USB, 5 reserved, 6 LFRAME abort, 7 iotrap, 8 flash emu, 9 flash lending (§5.5), 10 bank map, 11 quad NOR (0 = single/dual-SPI board, e.g. UPduino) |
 | 0x0A | `BOOT_STATUS` | RO | bit0 boot config valid, bit1 serving from boot config, bit2 config CRC bad (defaults used), bit3 woke via slave config |
 | 0x0C–0x0F | `SCRATCH` | RW | Link test |
-| 0x10–0x11 | `IRQ_STATUS` | W1C | bit0 `LRST_ASSERT`, 1 `LRST_DEASSERT`, 2 `BANK_SWAPPED`, 3 `USB`, 4 `IOTRAP` (FIFO above threshold or deferred read pending), 5 `MBX_RX`, 6 `COM_RX`, 7 `ERROR`, 8 `CRC_DONE`, 9 `NOR_DONE`, 10 `FLASHEMU` (Xbox started/finished a flash write sequence), 11 `BOOTCTL` (console armed a bank or confirmed) |
+| 0x10–0x11 | `IRQ_STATUS` | W1C | bit0 `LRST_ASSERT`, 1 `LRST_DEASSERT`, 2 `BANK_SWAPPED`, 3 `USB`, 4 `IOTRAP` (FIFO above threshold or deferred read pending), 5 `MBX_RX`, 6 `COM_RX`, 7 `ERROR`, 8–9 reserved, 10 `FLASHEMU` (Xbox started/finished a flash write sequence), 11 `BOOTCTL` (console armed a bank or confirmed) |
 | 0x12–0x13 | `IRQ_ENABLE` | RW | Same bits |
 | 0x14 | `ERR_STATUS` | W1C | bit0 reserved, 1 `FIFO_UNDERRUN`, 2 `FIFO_OVERFLOW`, 3 `LPC_SYNC_TIMEOUT`, 4 `LINK_BAD_CMD`, 5 `IOTRAP_OVERFLOW`, 6 `FLASHEMU_PROTECT` (write to protected bank refused) |
 | 0x15 | `SOFT_RESET` | SC | `0xA5`: reset all blocks except link |
@@ -169,27 +169,24 @@ Shadow RAM (128 B) is SPACE 0 `0x0400–0x047F`.
 
 Event record (SPACE 3 port 2, 4 bytes, little-endian): `port[15:0]`, `data[7:0]`, `flags[7:0]` = bit0 read (1) / write (0), bits 3:1 window, bit4 FIFO overflowed before this event, bits 7:5 coarse Δt since previous event (0 < 1 µs, 1 < 4 µs, … 7 ≥ 4 ms) — enough to separate bit-banged bursts.
 
-### 5.5 NOR / flash emulation / CRC — `0x00C0`
+### 5.5 Flash lending / flash emulation — `0x00C0`
 
 | Addr | Name | Access | Description |
 |---|---|---|---|
-| 0xC0 | `NOR_STATUS` | RO | bit0 flash woken and ID read; bit1 quad enabled; bit2 busy; bit3 an erase/program is suspended for BIOS reads; bit4 CRC running; bit5 the last `NOR_OP` was refused |
-| 0xC2–0xC4 | `NOR_JEDEC_ID` | RO | Manufacturer, type, capacity |
-| 0xC8–0xCA | `NOR_OP_ADDR` | WO | |
-| 0xCB | `NOR_OP` | SC | 1 = erase 4 K, 2 = erase 64 K, 3 = program `NOR_LEN` + 1 bytes from the buffer (within one 256-byte page), 5 = read `NOR_LEN` + 1 bytes into the buffer; raises `NOR_DONE`. Ignored while busy. Erase and program below the ROM catalogue (the bitstream) are refused unless `NOR_UNLOCK = 0x5A`. |
-| 0xCC | `NOR_LEN` | WO | Bytes − 1 |
-| 0xCD | `NOR_UNLOCK` | WO | `0x5A` permits the next operation on the bitstream area; cleared by every `NOR_OP` |
-| 0xD0–0xD2 | `CRC_ADDR` | WO | |
-| 0xD3–0xD5 | `CRC_LEN` | WO | |
-| 0xD6 | `CRC_CTRL` | SC | bit0 start → `CRC_DONE`. Ignored while busy. |
-| 0xD8–0xDB | `CRC_RESULT` | RO | CRC-32 IEEE (zlib / `esp_rom_crc32_le` compatible) |
-| 0xDC–0xDD | `NOR_MISS` | RW | Commands the flash didn't take, sent again: 0xDC WRENs (WEL not set after), 0xDD programs/erases (WEL still set once BUSY clears). Saturate at 255; a write to 0xDC clears both. After 8 attempts the operation ends as refused. |
+| 0xC0 | `FLASH_CTRL` | RW | bit0 `REQ` (ESP32 wants the flash), bit1 `GRANT` (RO: the FPGA's flash pins are Hi-Z, the ESP32 may drive the config bus) |
+| 0xC1 | `FLASH_MISS` | RW | BIOS reads answered 0xFF while the flash was away; saturates at 255, a write clears it |
 | 0xE0 | `FE_CTRL` | RW | bit0 enable JEDEC flash emulation; bit1 chip-erase maps to active bank only (always 1 — read-only) |
 | 0xE1–0xE2 | `FE_ID` | RW | Manufacturer / device ID returned in autoselect mode (from boot config) |
 | 0xE3 | `FE_STATUS` | RO | bit0 Xbox in a program/erase sequence; bit1 last op refused (protected); bits 7:4 last command type |
 | 0xE4–0xE6 | `FE_LAST_ADDR` | RO | |
 
-The engine shares the flash with BIOS serving, which always comes first. It takes the flash only after the console has gone 1 ms without reading it, or has been in reset that long, and gives it back within ~30 µs when a BIOS read arrives: reads and CRCs stop between bytes and carry on later, programs go out in 32-byte pieces, and an erase or program in progress is suspended until the console is quiet again. A 256 KB CRC takes about 0.2 s, a buffer read or program about 0.2 ms plus the link transfers.
+The ESP32 reads, erases and programs the flash itself over the config bus (§1.1, the commands of §2.2), borrowing it from the running FPGA for each operation:
+
+1. Write `REQ = 1`. Once the console has gone 1 ms without a BIOS read, or while `LRESET#` is asserted, the FPGA stops its flash reader (which deselects the flash), floats its flash pins and sets `GRANT`.
+2. Poll `GRANT` (a boot reads the flash for about half a second), then drive the config bus.
+3. Wait until the flash isn't busy, float the config-bus pins, write `REQ = 0`. The FPGA drives the pins again at once and its reader starts over, waking the flash first. Read `FLASH_MISS`.
+
+Until then every BIOS read is answered with 0xFF at once and counted, so ROM writes are made only while the console runs from RAM (the user's menu). The ESP32 refuses erases and programs below the catalogue (the bitstream area) unless it holds the FPGA in reset.
 
 ### 5.6 Mailbox — `0x0100`
 
@@ -320,6 +317,6 @@ Invalid/missing record → safe defaults: `SERVE_EN` off (stock TSOP boot on 1.0
 
 - IRQ handling: one burst read of `IRQ_STATUS` (+ USB bitmaps when flagged), service, W1C what was handled.
 - Prefer `PENDING_BANK` + `ARM_AT_RESET` for switches while the console runs.
-- After any ROM write, verify with the CRC engine before marking the catalogue entry valid.
+- After any ROM write, verify its CRC (read back over the config bus) before marking the catalogue entry valid.
 - Writing the boot config: write the *other* record slot with sequence+1, verify CRC, never erase the current one first.
 - Check `VERSION_MAJOR`; on mismatch, don't touch LPC registers (the FPGA is already serving from boot config) and offer a bitstream update.

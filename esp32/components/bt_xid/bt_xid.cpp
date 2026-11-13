@@ -18,30 +18,62 @@ const char *Tag = "bt";
 constexpr uint16_t CmdStatus = 0x0800;     // -> u8 started, u8 pairing, u8 controllers, u8 config
 constexpr uint16_t CmdPair = 0x0801;       // u8 on
 constexpr uint16_t CmdConfig = 0x0802;     // u8 on: BlueRetro's BLE configuration page
+constexpr uint16_t CmdForget = 0x0803;     // all controllers: disconnect, clear pairing keys
 
-// Output 0 drives the console's gamepad
-constexpr uint8_t PadOutput = 0;
+// The console's pad follows one output: BlueRetro gives each controller the output of
+// its Bluetooth slot, so the first controller isn't always output 0. The pad takes the
+// first output with a controller, and the next one when that controller goes.
+constexpr int NoOutput = -1;
 
 bool Started;
-uint32_t WasConnected;
+volatile int PadOutput = NoOutput;      // written by the Bluetooth tasks only
+
+void Adopt(int index)
+{
+    PadOutput = index;
+    if (index != NoOutput) {
+        UsbDev::SetPadState(wired_adapter.data[index].output);
+    }
+    UsbDev::SetPadPresent(index != NoOutput);
+    if (index != NoOutput) {
+        ESP_LOGI(Tag, "pad: controller on output %d", index);
+    } else {
+        ESP_LOGI(Tag, "pad: no controller");
+    }
+}
 
 void Updated(uint8_t index)
 {
+    const wired_data &d = wired_adapter.data[index];
+    if (PadOutput == NoOutput) {
+        if (d.connected) {
+            Adopt(index);
+        }
+        return;
+    }
     if (index != PadOutput) {
         return;
     }
-    const wired_data &d = wired_adapter.data[index];
-    UsbDev::SetPadState(d.output);
-    if (d.connected != WasConnected) {
-        WasConnected = d.connected;
-        UsbDev::SetPadPresent(d.connected != 0);
-        ESP_LOGI(Tag, "controller %s", d.connected ? "connected" : "gone");
+    if (d.connected) {
+        UsbDev::SetPadState(d.output);
+        return;
     }
+    // Gone: another connected controller takes the pad over, else it is unplugged
+    for (int i = 0; i < WIRED_MAX_DEV; i++) {
+        if (i != index && wired_adapter.data[i].connected) {
+            Adopt(i);
+            return;
+        }
+    }
+    Adopt(NoOutput);
 }
 
 void Rumble(uint16_t left, uint16_t right)
 {
-    xid_map_rumble(PadOutput, left, right);
+    const int out = PadOutput;
+    if (out != NoOutput) {
+        xid_map_rumble(uint8_t(out), left, right);
+    }
 }
 
 int Log(const char *fmt, va_list ap)
@@ -94,6 +126,13 @@ void RegisterCommands()
             return;
         }
         blueretro_config_access(on != 0);
+    });
+    HostLink::Register(CmdForget, [](HostLink::Args &, HostLink::Reply &reply) {
+        if (!Started) {
+            reply.Fail(HostLink::Error::Failed, "Bluetooth not started");
+            return;
+        }
+        blueretro_forget_all();
     });
     HostLink::Register(CmdPair, [](HostLink::Args &args, HostLink::Reply &reply) {
         const uint8_t on = args.U8();

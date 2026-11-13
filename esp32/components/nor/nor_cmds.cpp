@@ -28,7 +28,7 @@ void ReadCmd(Args &args, Reply &reply)
         reply.Fail(Error::BadArgs);
         return;
     }
-    static uint8_t buf[4096];
+    uint8_t *buf = HostLink::Scratch();
     if (Read(addr, buf, len)) {
         reply.Put(buf, len);
     }

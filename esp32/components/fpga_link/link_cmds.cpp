@@ -21,7 +21,8 @@ void ReadCmd(Args &args, Reply &reply)
         reply.Fail(Error::BadArgs);
         return;
     }
-    static uint8_t buf[MaxXfer];
+    static_assert(MaxXfer <= HostLink::ScratchSize);
+    uint8_t *buf = HostLink::Scratch();
     uint8_t sts;
     if (!Read(Space(space & 7), addr, buf, len, &sts, space & 8)) {
         reply.Fail(Error::Failed, "SPI error");

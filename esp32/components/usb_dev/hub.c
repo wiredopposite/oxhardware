@@ -1,11 +1,17 @@
 // A full-speed hub with per-port power switching. Port state follows the host's
 // SET/CLEAR_FEATURE requests; a port reset resets the device behind it at once, and
 // changes go to the host on the status change endpoint.
+//
+// A device shows up on its port the way it would on a real hub: CONNECT_DELAY_US after
+// the port is powered (power good, then the device's attach), or after it is attached
+// to a powered port. Reported at once, the console's hub driver can take the change
+// while it is still powering the other ports, and then never looks at the port.
 #include "hub.h"
 
 #include <string.h>
 
 #include "class/hub_def.h"
+#include "esp_timer.h"
 #include "dcd_fpga.h"
 #include "usb_def.h"
 #include "usb_util.h"
@@ -13,6 +19,8 @@
 #define EPADDR_STATUS   (1U | USB_EP_DIR_IN)
 
 #define BIT(f)          (1UL << (f))
+#define POWER_GOOD_2MS  25U                 // bPowerOnToPowerGood: 50 ms
+#define CONNECT_DELAY_US (100 * 1000)
 #define PORT_STATUS_MSK (BIT(USB_FEATURE_PORT_CONNECTION) | BIT(USB_FEATURE_PORT_ENABLE) | \
                          BIT(USB_FEATURE_PORT_SUSPEND) | BIT(USB_FEATURE_PORT_RESET))
 
@@ -91,6 +99,7 @@ static const usb_desc_string_t *DescStr[] = {&DescStr0, &DescStr1, &DescStr2};
 typedef struct {
     usbd_handle_t *dev;     // NULL: nothing attached
     bool powered;
+    int64_t connect_at;     // the attached device shows up then (0: not pending)
     uint32_t status;        // wPortStatus | wPortChange << 16
 } port_t;
 
@@ -108,6 +117,7 @@ static void reset_ports(void)
 {
     for (uint8_t p = 1; p <= Ports; p++) {
         Port[p].powered = false;
+        Port[p].connect_at = 0;
         Port[p].status = 0;
     }
     Changed = 0;
@@ -120,10 +130,10 @@ static void power(uint8_t p, bool on)
         return;
     }
     port->powered = on;
+    port->connect_at = 0;
     if (on) {
         if (port->dev != NULL) {
-            port->status |= BIT(USB_FEATURE_PORT_CONNECTION);
-            set_change(p, USB_FEATURE_C_PORT_CONNECTION);
+            port->connect_at = esp_timer_get_time() + CONNECT_DELAY_US;
         }
     } else {
         if (port->status & BIT(USB_FEATURE_PORT_CONNECTION)) {
@@ -240,7 +250,7 @@ static bool get_desc_cb(usbd_handle_t *handle, const usb_ctrl_req_t *req)
             .bNumberOfPorts         = Ports,
             .wHubCharacteristics    = USB_HUB_CHAR_POWER_SWITCH_INDIVIDUAL |
                                       USB_HUB_CHAR_THINKTIME_8_FS_BITS,
-            .bPowerOnToPowerGood    = 1,        // 2 ms units
+            .bPowerOnToPowerGood    = POWER_GOOD_2MS,
             .bHubControlCurrent     = 0,
             .DeviceRemovable        = 0,
             .PortPwrCtrlMask        = 0xFF,
@@ -337,8 +347,7 @@ bool hub_attach(uint8_t port, usbd_handle_t *dev)
     }
     Port[port].dev = dev;
     if (Port[port].powered) {
-        Port[port].status |= BIT(USB_FEATURE_PORT_CONNECTION);
-        set_change(port, USB_FEATURE_C_PORT_CONNECTION);
+        Port[port].connect_at = esp_timer_get_time() + CONNECT_DELAY_US;
     }
     return true;
 }
@@ -350,6 +359,7 @@ usbd_handle_t *hub_detach(uint8_t port)
     }
     usbd_handle_t *dev = Port[port].dev;
     Port[port].dev = NULL;
+    Port[port].connect_at = 0;
     if (Port[port].status & BIT(USB_FEATURE_PORT_CONNECTION)) {
         Port[port].status &= ~PORT_STATUS_MSK;
         set_change(port, USB_FEATURE_C_PORT_CONNECTION);
@@ -366,8 +376,19 @@ usbd_handle_t *hub_detach(uint8_t port)
 
 void hub_task(usbd_handle_t *handle)
 {
-    if (handle == NULL || handle->state != USBD_STATE_CONFIGURED || Changed == 0 ||
-        !usbd_ep_ready(handle, EPADDR_STATUS)) {
+    if (handle == NULL || handle->state != USBD_STATE_CONFIGURED) {
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    for (uint8_t p = 1; p <= Ports; p++) {
+        port_t *port = &Port[p];
+        if (port->connect_at != 0 && now >= port->connect_at) {
+            port->connect_at = 0;
+            port->status |= BIT(USB_FEATURE_PORT_CONNECTION);
+            set_change(p, USB_FEATURE_C_PORT_CONNECTION);
+        }
+    }
+    if (Changed == 0 || !usbd_ep_ready(handle, EPADDR_STATUS)) {
         return;
     }
     const uint8_t bitmap = Changed;

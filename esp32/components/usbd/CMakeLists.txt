@@ -3,4 +3,4 @@ idf_component_register(
     INCLUDE_DIRS "include" "include/common"
     REQUIRES fpga_link esp_hw_support
 )
-target_compile_definitions(${COMPONENT_LIB} PUBLIC USBD_DEVICES_MAX=8)
+target_compile_definitions(${COMPONENT_LIB} PUBLIC USBD_DEVICES_MAX=4)

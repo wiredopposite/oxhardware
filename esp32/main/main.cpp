@@ -1,3 +1,4 @@
+#include "bt_xid.hpp"
 #include "cfg_bus.hpp"
 #include "esp_log.h"
 #include "fpga_link.hpp"
@@ -29,5 +30,7 @@ extern "C" void app_main(void)
     ProgServer::RegisterCommands();
     ProgServer::StartMailbox();
     UsbDev::RegisterCommands();
+    BtXid::RegisterCommands();
+    BtXid::Start();
     ESP_LOGI(Tag, "OpenOX ESP32 up, FPGA CDONE=%d", CfgBus::Cdone());
 }

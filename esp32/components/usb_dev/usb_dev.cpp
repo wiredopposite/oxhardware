@@ -38,6 +38,7 @@ constexpr uint8_t XboxHubPorts = 3;     // a controller: pad, two MU slots
 TaskHandle_t Task;
 volatile bool StartReq, StopReq, Running;
 volatile int8_t PlugReq = -1;       // -1 none, 0 unplug, 1 plug
+volatile bool PadPresent = true;    // the Xbox profile's pad is plugged in at start
 constexpr uint8_t PadPort = 1;
 Profile Want, Current;
 usbd_handle_t *Hub, *Pad;
@@ -55,7 +56,8 @@ bool Start(Profile profile)
         }
     }
     Pad = IsXid() ? xid_pad_init() : hid_test_init();
-    if (Pad == nullptr || (Hub != nullptr && !hub_attach(PadPort, Pad))) {
+    const bool attach = Hub != nullptr && (!IsXid() || PadPresent);
+    if (Pad == nullptr || (attach && !hub_attach(PadPort, Pad))) {
         usbd_deinit(USBD_HW_FPGA);
         Hub = Pad = nullptr;
         return false;
@@ -110,6 +112,16 @@ void Run(void *)
     }
 }
 
+RumbleHandler Rumble;
+
+void PadRumble(const xid_out_t *out)
+{
+    const RumbleHandler h = Rumble;
+    if (h != nullptr) {
+        h(out->left, out->right);
+    }
+}
+
 bool HasUsb()
 {
     uint8_t f[2];
@@ -125,6 +137,33 @@ void Wake()
     xTaskNotifyGive(Task);
 }
 
+}
+
+void SetPadState(const uint8_t state[18])
+{
+    xid_in_t in;
+    static_assert(sizeof(in) == 18);
+    memcpy(&in, state, sizeof(in));
+    xid_pad_set(&in);
+    if (Task != nullptr && Running) {
+        xTaskNotifyGive(Task);
+    }
+}
+
+void SetPadPresent(bool present)
+{
+    PadPresent = present;
+    if (Task == nullptr || !Running || Hub == nullptr) {
+        return;
+    }
+    PlugReq = present ? 1 : 0;
+    xTaskNotifyGive(Task);
+}
+
+void OnRumble(RumbleHandler handler)
+{
+    Rumble = handler;
+    xid_pad_on_rumble(PadRumble);
 }
 
 void RegisterCommands()

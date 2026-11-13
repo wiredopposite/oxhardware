@@ -281,6 +281,12 @@ void Register(uint16_t cmd, Handler handler)
     }
 }
 
+uint8_t *Scratch()
+{
+    static uint8_t buf[ScratchSize];
+    return buf;
+}
+
 void SendEvent(uint16_t id, const void *data, size_t len)
 {
     const uint8_t head[2] = { uint8_t(id), uint8_t(id >> 8) };

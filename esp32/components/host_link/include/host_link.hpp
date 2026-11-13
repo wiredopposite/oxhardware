@@ -110,6 +110,10 @@ inline constexpr uint16_t NorCrc = 0x0604;
 // commands are answered UnknownCommand.
 void Start();
 void Register(uint16_t cmd, Handler handler);
+
+// One buffer for command handlers: they run one at a time, on the host_link task
+inline constexpr size_t ScratchSize = 4096 + 8;
+uint8_t *Scratch();
 void SendEvent(uint16_t id, const void *data, size_t len);
 
 }

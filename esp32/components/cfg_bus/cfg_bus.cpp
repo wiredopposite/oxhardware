@@ -1,5 +1,6 @@
 #include "cfg_bus.hpp"
 
+#include <cstdlib>
 #include <cstring>
 
 #include "board_pins.hpp"
@@ -379,10 +380,14 @@ bool Crc32(uint32_t addr, uint32_t len, uint32_t *crc)
             table[i] = c;
         }
     }
-    static uint8_t buf[4096];
+    constexpr uint32_t BufSize = 4096;
+    static uint8_t *buf = static_cast<uint8_t *>(malloc(BufSize));     // heap, not static DRAM
+    if (buf == nullptr) {
+        return false;
+    }
     uint32_t c = 0xFFFFFFFFu;
     while (len) {
-        const uint32_t n = len < sizeof(buf) ? len : sizeof(buf);
+        const uint32_t n = len < BufSize ? len : BufSize;
         if (!Read(addr, buf, n)) {
             return false;
         }

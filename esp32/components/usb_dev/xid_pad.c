@@ -128,6 +128,7 @@ static bool Changed;            // under Mux
 static xid_out_t Rumble;        // under Mux
 static uint32_t Reports;
 static uint32_t Rumbles;
+static volatile xid_pad_rumble_cb_t RumbleCb;
 
 static void take_state(report_in_t *r)
 {
@@ -144,10 +145,16 @@ static void got_rumble(const uint8_t *data, int32_t len)
     if (len < (int32_t)sizeof(report_out_t) || data[1] < sizeof(report_out_t)) {
         return;
     }
+    xid_out_t out;
+    memcpy(&out, data + 2, sizeof(out));
     taskENTER_CRITICAL(&Mux);
-    memcpy(&Rumble, data + 2, sizeof(Rumble));
+    Rumble = out;
     taskEXIT_CRITICAL(&Mux);
     Rumbles++;
+    const xid_pad_rumble_cb_t cb = RumbleCb;
+    if (cb != NULL) {
+        cb(&out);
+    }
 }
 
 static void init_cb(usbd_handle_t *handle)
@@ -295,6 +302,11 @@ void xid_pad_rumble(xid_out_t *out)
     taskENTER_CRITICAL(&Mux);
     *out = Rumble;
     taskEXIT_CRITICAL(&Mux);
+}
+
+void xid_pad_on_rumble(xid_pad_rumble_cb_t cb)
+{
+    RumbleCb = cb;
 }
 
 uint32_t xid_pad_reports(void)

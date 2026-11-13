@@ -39,6 +39,9 @@ void xid_pad_task(usbd_handle_t *handle);
 // From any task: the pad's state; sent when it changes
 void xid_pad_set(const xid_in_t *state);
 void xid_pad_rumble(xid_out_t *out);
+// Called from the USB task with each output report
+typedef void (*xid_pad_rumble_cb_t)(const xid_out_t *out);
+void xid_pad_on_rumble(xid_pad_rumble_cb_t cb);
 uint32_t xid_pad_reports(void);         // IN reports the host has taken
 uint32_t xid_pad_rumbles(void);         // output reports received
 

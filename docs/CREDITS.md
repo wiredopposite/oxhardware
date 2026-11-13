@@ -2,7 +2,7 @@
 
 ## Provenance
 
-The gateware, tools and documentation in this repository are original work. **No source code from the third-party projects listed below is included.** They were studied as references for how the original Xbox's LPC bus, boot process and modchip registers behave.
+The gateware, tools and documentation in this repository are original work. **No source code from the third-party projects listed below is included**, except BlueRetro (below). They were studied as references for how the original Xbox's LPC bus, boot process and modchip registers behave.
 
 The primary sources for that behaviour are:
 
@@ -31,7 +31,7 @@ Code from these may be reused; it is the author's own work.
 | FPGA-USB-Device | LGPL-2.1 | USB packet layer structure (study only) |
 | Gowin USB 1.1 SoftPHY reference design | Vendor licence | USB soft PHY approach (study only) |
 | lpc-uart | See its repository | Minimal LPC-to-UART device |
-| BlueRetro (darthcloud) | Software Apache-2.0, hardware CERN-OHL-P-2.0 | ESP32 Bluetooth controller stack (planned reuse) |
+| BlueRetro (darthcloud) | Software Apache-2.0, hardware CERN-OHL-P-2.0 | ESP32 Bluetooth controller stack: **included** as `esp32/components/blueretro`, the submodule libblueretro (github.com/wiredopposite/libblueretro), with its LICENSE and NOTICE |
 
 ## Reuse policy
 

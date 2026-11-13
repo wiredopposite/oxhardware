@@ -16,4 +16,12 @@ enum class Profile : uint8_t {
 
 void RegisterCommands();
 
+// The Xbox profile's gamepad, from any task: its state (xid_in_t, 18 bytes), whether a
+// controller is behind it (plugged into hub port 1 or not; kept for the next start, and
+// present until first set), and the console's rumble
+void SetPadState(const uint8_t state[18]);
+void SetPadPresent(bool present);
+using RumbleHandler = void (*)(uint16_t left, uint16_t right);
+void OnRumble(RumbleHandler handler);
+
 }

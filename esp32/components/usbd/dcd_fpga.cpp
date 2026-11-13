@@ -3,7 +3,8 @@
 // The FPGA answers every token itself: it ACKs, NAKs and STALLs from slot state, so all
 // this driver does is fill IN slots, empty OUT slots and keep the address and endpoint
 // maps. Device d's EP0 is IN slot d and OUT slot 16 + d; other endpoints take slots from
-// the rest (USBD_DEVICES_MAX..15 in each half) through the endpoint map.
+// the rest (8..15 in each half) through the endpoint map. Slots 0..7 are the FPGA's EP0
+// slots whether or not usbd uses that many devices.
 //
 // Addresses: a bus reset clears the FPGA's address map, after which device 0 (the hub,
 // or the only device) answers at address 0. When the hub resets one of its ports, the
@@ -21,7 +22,8 @@
 #include "usbd/dcd/dcd.h"
 #include "usbd/usbd.h"
 
-static_assert(USBD_DEVICES_MAX <= 8, "the FPGA has 8 devices");
+constexpr uint8_t FpgaDevices = 8;          // EP0 slots 0..7 (IN) and 16..23 (OUT)
+static_assert(USBD_DEVICES_MAX <= FpgaDevices, "the FPGA has 8 devices");
 
 namespace {
 
@@ -77,6 +79,7 @@ struct Device {
     uint32_t events;
     uint32_t eps;
     bool setup;             // held back behind events of the previous transfer
+    bool active;            // usbd runs this device (calls Task for it)
     bool hold;              // EP0 events of the previous transfer go to usbd now, after a
                             // SETUP the FPGA already has: keep them off the hardware
 };
@@ -134,7 +137,7 @@ uint8_t FindSlot(uint8_t dport, uint8_t epaddr)
         return IsIn(epaddr) ? dport : uint8_t(16 + dport);
     }
     const uint8_t base = IsIn(epaddr) ? 0 : 16;
-    for (uint8_t s = base + USBD_DEVICES_MAX; s < base + 16; s++) {
+    for (uint8_t s = base + FpgaDevices; s < base + 16; s++) {
         if (Slots[s].used && Slots[s].dev == dport && Slots[s].epaddr == epaddr) {
             return s;
         }
@@ -232,6 +235,9 @@ bool Init()
 {
     memset(Slots, 0, sizeof(Slots));
     ResetState();
+    for (Device &d : Devs) {
+        d.active = false;
+    }
     St = {};
     static const uint8_t zero[256] = {};
     const uint8_t clear[8] = {0x0F, IrqEnable, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -278,7 +284,7 @@ bool EpOpen(uint8_t dport, uint8_t epaddr, uint8_t epattr, uint16_t epsize)
     uint8_t slot = FindSlot(dport, epaddr);
     if (slot == SlotNone) {
         const uint8_t base = IsIn(epaddr) ? 0 : 16;
-        for (uint8_t s = base + USBD_DEVICES_MAX; s < base + 16; s++) {
+        for (uint8_t s = base + FpgaDevices; s < base + 16; s++) {
             if (!Slots[s].used) {
                 slot = s;
                 break;
@@ -432,6 +438,7 @@ bool Task(uint8_t dport, uint32_t *event_mask, uint32_t *ep_mask)
         return false;
     }
     Device &d = Devs[dport];
+    d.active = true;
     if (d.setup && d.events == 0) {
         d.events = USBD_EVENT_SETUP;
         d.setup = false;
@@ -577,8 +584,9 @@ void dcd_fpga_detach(uint8_t dport)
 
 bool dcd_fpga_pending(void)
 {
+    // Events for devices usbd doesn't run (a bus reset reaches all eight) never drain
     for (const Device &d : Devs) {
-        if (d.events || d.setup) {
+        if (d.active && (d.events || d.setup)) {
             return true;
         }
     }

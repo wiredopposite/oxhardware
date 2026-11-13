@@ -40,7 +40,8 @@ module tb;
     defparam dut.u_fs.QUIET_CLKS = 2400;
     spi_flash_model flash (.cs_n(f_cs), .sck(f_sck), .mosi(f_mosi), .miso(f_miso));
 
-    always #15 lclk = ~lclk;                  // 33.3 MHz
+    reg lclk_on = 1'b1;                       // the console is powered
+    always #15 lclk = lclk_on ? ~lclk : 1'b0;  // 33.3 MHz
 
     reg [7:0] bios [0:262143];
     integer i, reads = 0, errors = 0, timeouts = 0, waits_total = 0, wait_max = 0;
@@ -544,6 +545,29 @@ module tb;
         end
     endtask
 
+    // Console power: LCLK stops and starts again; LPC_STATUS bit1 and IRQ CONSOLE_POWER
+    task power_tests;
+        begin
+            lw(16'h0011, 8'hFF); lw(16'h0013, 8'h01);           // enable CONSOLE_POWER only
+            lw(16'h0012, 8'h00);
+            link_xfer(8'h80, 16'h0021, 1);
+            if (lbuf[0][1] !== 1'b1) begin $display("ERROR: LCLK not seen running"); errors = errors + 1; end
+            lclk_on = 0; #5_000;
+            link_xfer(8'h80, 16'h0021, 1);
+            if (lbuf[0][1] !== 1'b0) begin $display("ERROR: stopped LCLK still running"); errors = errors + 1; end
+            lr(16'h0011, 8'h01);
+            if (irq_n !== 1'b0) begin $display("ERROR: no IRQ for LCLK stopping"); errors = errors + 1; end
+            lw(16'h0011, 8'h01); #200;                          // the write lands after CS#
+            if (irq_n !== 1'b1) begin $display("ERROR: IRQ_N not released"); errors = errors + 1; end
+            lclk_on = 1; #5_000;
+            link_xfer(8'h80, 16'h0021, 1);
+            if (lbuf[0][1] !== 1'b1) begin $display("ERROR: restarted LCLK not running"); errors = errors + 1; end
+            lr(16'h0011, 8'h01);
+            lw(16'h0011, 8'h01); lw(16'h0013, 8'h00);
+            run(32'hFF000300, 8);
+        end
+    endtask
+
     task bank_tests;
         begin
             // defaults
@@ -567,7 +591,7 @@ module tb;
             if (irq_n !== 1'b0) begin $display("ERROR: IRQ_N not low"); errors = errors + 1; end
             lw(16'h0011, 8'h08);                                  // W1C
             if (irq_n !== 1'b1) begin $display("ERROR: IRQ_N not released"); errors = errors + 1; end
-            lr(16'h0021, 8'h0D);                                  // swap armed
+            lr(16'h0021, 8'h0F);                                  // swap armed
             exp_x = 8'h5A; console_reset;
             lr(16'h0010, 8'h03);                                  // LRST assert + deassert
             if (irq_n !== 1'b0) begin $display("ERROR: IRQ_N not low after reset"); errors = errors + 1; end
@@ -701,7 +725,7 @@ module tb;
         if (lsts !== 8'h60) begin
             $display("ERROR: link STS %h, expected 60", lsts); errors = errors + 1;
         end
-        link_expect(8'h80, 16'h0021, 1, 32'h05);                 // LRESET# high, served
+        link_expect(8'h80, 16'h0021, 1, 32'h07);                 // LRESET# high, LCLK, served
         link_expect(8'h80, 16'h0007, 3, 32'h025F01);             // BOARD_ID, FEATURES
         LHALF = 2000;                                            // 250 kHz
         link_expect(8'h80, 16'h0000, 4, "GFXO");
@@ -723,6 +747,7 @@ module tb;
         bank_tests;
         mbx_tests;
         fs_tests;
+        power_tests;
 
         $display("reads=%0d errors=%0d timeouts=%0d max_wait=%0d uart_out=%0d",
                  reads, errors, timeouts, wait_max, ngot);

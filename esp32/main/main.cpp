@@ -1,5 +1,6 @@
 #include "bt_xid.hpp"
 #include "cfg_bus.hpp"
+#include "console.hpp"
 #include "esp_log.h"
 #include "fpga_link.hpp"
 #include "fpga_svc.hpp"
@@ -22,6 +23,8 @@ extern "C" void app_main(void)
     FpgaLink::Init();
     FpgaLink::RegisterCommands();
     FpgaSvc::Start();
+    Console::Start();
+    Console::RegisterCommands();
     Nor::Init();
     Nor::RegisterCommands();
     Smbus::Init();

@@ -67,6 +67,8 @@ static DRAM_ATTR const int8_t analog_btn_idx[32] = {
     -1, AN_BLACK, -1, -1,
 };
 
+static volatile uint32_t power_combo;  // per output: Home + Start held
+
 static int32_t clamp(int32_t v, const struct ctrl_meta *meta)
 {
     return v > meta->size_max ? meta->size_max : v < meta->size_min ? meta->size_min : v;
@@ -130,6 +132,19 @@ void xid_map_from_generic(int32_t dev_mode, struct wired_ctrl *ctrl_data, struct
         wired_data->cnt_mask[axis_to_btn_id(a)] = ctrl->axes[a].cnt_mask;
     }
     memcpy(wired_data->output, &st, sizeof(st));
+
+    const uint32_t combo = generic_btns_mask[PAD_MT] | generic_btns_mask[PAD_MM];
+    const uint32_t bit = BIT(wired_data->index);
+    if ((ctrl->btns[0].value & combo) == combo) {
+        power_combo |= bit;
+    } else {
+        power_combo &= ~bit;
+    }
+}
+
+bool xid_map_power_combo(uint8_t index)
+{
+    return index < WIRED_MAX_DEV && (power_combo & BIT(index));
 }
 
 void xid_map_fb_to_generic(int32_t dev_mode, struct raw_fb *raw_fb_data, struct generic_fb *fb_data)

@@ -237,9 +237,14 @@ module top_lpc_com (
     assign link_miso  = l_miso_oe ? l_miso : 1'bz;
     assign fpga_irq_n = !irq;
 
+    // Console power: its LPC clock runs whenever it is on, also in reset
+    wire lclk_run, lclk_chg;
+    lclk_detect u_lclk (.lclk(lpc_clk), .clk(clk), .running(lclk_run), .changed(lclk_chg));
+
     link_regs #(.BOARD_ID(8'h01), .FEATURES(16'h025F)) u_regs (
         .clk(clk), .wr(l_wr && l_space == 3'd0), .addr(l_addr[15:0]), .wdata(l_wdata),
-        .rdata(reg_rdata), .lreset_n(lrst_s[1]), .served_pulse(served_pulse),
+        .rdata(reg_rdata), .lreset_n(lrst_s[1]), .lclk_running(lclk_run),
+        .served_pulse(served_pulse),
         .armed(armed)
     );
     bank_ctrl u_bank (
@@ -247,7 +252,7 @@ module top_lpc_com (
         .rdata(bank_rdata), .hit(bank_hit),
         .lreset_n(lrst_s[1]), .served_pulse(served_pulse), .served_addr(st_addr),
         .cp_tog(bc_tog), .cp_off(bc_off), .cp_data(bc_data),
-        .irq_set({10'd0, mbx_irq, 1'b0, usb_irq, 3'd0}),
+        .irq_set({7'd0, lclk_chg, 2'd0, mbx_irq, 1'b0, usb_irq, 3'd0}),
         .lpc_ctrl(lpc_ctrl), .bank_base(bank_base), .bank_size(bank_size),
         .bootctl_base(bootctl_base), .port_vals(bc_vals), .armed(armed), .irq(irq)
     );

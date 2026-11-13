@@ -312,7 +312,19 @@ def cmd_smbus(link, a):
         print("ok")
 
 
+CONSOLE_STATE, CONSOLE_PRESS = 0x0410, 0x0411
+CONSOLE_STATES = ["unknown (FPGA not answering)", "off", "reset", "running"]
+
+
 def cmd_xbox(link, a):
+    if a.what == "state":
+        s = link.request(CONSOLE_STATE)[0]
+        print(CONSOLE_STATES[s] if s < len(CONSOLE_STATES) else s)
+        return
+    if a.what in ("power", "eject"):
+        link.request(CONSOLE_PRESS, bytes([a.what == "eject"]))
+        print(f"{a.what} button pressed")
+        return
     if a.what == "status":
         for name, reg in [("tray state", 0x03), ("AV pack", 0x04), ("CPU temp", 0x09),
                           ("board temp", 0x0A)]:
@@ -585,7 +597,8 @@ def main():
     s.add_argument("value", nargs="?", type=lambda x: int(x, 0))
     s.add_argument("--word", action="store_true")
     s = sub.add_parser("xbox")
-    s.add_argument("what", choices=["status", "reset", "cycle", "off"])
+    s.add_argument("what", choices=["status", "state", "power", "eject", "reset", "cycle", "off"],
+                   help="state: off/reset/running from the FPGA; power, eject: press the button")
     s = sub.add_parser("link")
     s.add_argument("what", choices=["info", "probe", "test", "read", "write", "irq"])
     s.add_argument("addr", nargs="?", type=lambda x: int(x, 0), default=0)

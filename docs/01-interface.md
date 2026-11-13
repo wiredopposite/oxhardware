@@ -104,7 +104,7 @@ Used for: bitstream updates (write region, verify, reboot) and unbricking (golde
 | 0x08–0x09 | `FEATURES` | RO | bit0 LPC mem, 1 COM, 2 Super I/O, 3 mailbox, 4 USB, 5 reserved, 6 LFRAME abort, 7 iotrap, 8 flash emu, 9 flash lending (§5.5), 10 bank map, 11 quad NOR (0 = single/dual-SPI board, e.g. UPduino) |
 | 0x0A | `BOOT_STATUS` | RO | bit0 boot config valid, bit1 serving from boot config, bit2 config CRC bad (defaults used), bit3 woke via slave config |
 | 0x0C–0x0F | `SCRATCH` | RW | Link test |
-| 0x10–0x11 | `IRQ_STATUS` | W1C | bit0 `LRST_ASSERT`, 1 `LRST_DEASSERT`, 2 `BANK_SWAPPED`, 3 `USB`, 4 `IOTRAP` (FIFO above threshold or deferred read pending), 5 `MBX_RX`, 6 `COM_RX`, 7 `ERROR`, 8–9 reserved, 10 `FLASHEMU` (Xbox started/finished a flash write sequence), 11 `BOOTCTL` (console armed a bank or confirmed) |
+| 0x10–0x11 | `IRQ_STATUS` | W1C | bit0 `LRST_ASSERT`, 1 `LRST_DEASSERT`, 2 `BANK_SWAPPED`, 3 `USB`, 4 `IOTRAP` (FIFO above threshold or deferred read pending), 5 `MBX_RX`, 6 `COM_RX`, 7 `ERROR`, 8 `CONSOLE_POWER` (LCLK started or stopped: the console turned on or off), 9 reserved, 10 `FLASHEMU` (Xbox started/finished a flash write sequence), 11 `BOOTCTL` (console armed a bank or confirmed) |
 | 0x12–0x13 | `IRQ_ENABLE` | RW | Same bits |
 | 0x14 | `ERR_STATUS` | W1C | bit0 reserved, 1 `FIFO_UNDERRUN`, 2 `FIFO_OVERFLOW`, 3 `LPC_SYNC_TIMEOUT`, 4 `LINK_BAD_CMD`, 5 `IOTRAP_OVERFLOW`, 6 `FLASHEMU_PROTECT` (write to protected bank refused) |
 | 0x15 | `SOFT_RESET` | SC | `0xA5`: reset all blocks except link |

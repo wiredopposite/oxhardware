@@ -22,6 +22,7 @@ inline constexpr uint16_t Iotrap = 1u << 4;
 inline constexpr uint16_t MbxRx = 1u << 5;
 inline constexpr uint16_t ComRx = 1u << 6;
 inline constexpr uint16_t Error = 1u << 7;
+inline constexpr uint16_t ConsolePower = 1u << 8;     // LCLK started or stopped
 inline constexpr uint16_t FlashEmu = 1u << 10;
 inline constexpr uint16_t BootCtl = 1u << 11;
 }

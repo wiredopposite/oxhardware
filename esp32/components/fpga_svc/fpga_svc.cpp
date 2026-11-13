@@ -130,7 +130,7 @@ void Start()
     gpio_config_t io = {};
     io.pin_bit_mask = 1ull << Pins::FpgaIrq;
     io.mode = GPIO_MODE_INPUT;
-    io.intr_type = GPIO_INTR_LOW_LEVEL;
+    io.intr_type = GPIO_INTR_DISABLE;
     gpio_config(&io);
     xTaskCreate(Task, "fpga_svc", 3072, nullptr, 10, &Svc);
     const esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
@@ -138,7 +138,11 @@ void Start()
         ESP_LOGE(Tag, "no GPIO ISR service: %s", esp_err_to_name(err));
         return;
     }
+    // The line may already be low (the FPGA keeps its IRQs over an ESP32 reset): a level
+    // interrupt enabled before its handler is there never clears
     gpio_isr_handler_add(Pins::FpgaIrq, Isr, nullptr);
+    gpio_set_intr_type(Pins::FpgaIrq, GPIO_INTR_LOW_LEVEL);
+    gpio_intr_enable(Pins::FpgaIrq);
     // -> u32 interrupts, u32 spurious, u32 count per IRQ_STATUS bit (16)
     HostLink::Register(HostLink::Cmd::LinkIrq, [](HostLink::Args &, HostLink::Reply &reply) {
         Stats s = St;

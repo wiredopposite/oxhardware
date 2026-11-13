@@ -16,6 +16,9 @@ void xid_map_from_generic(int32_t dev_mode, struct wired_ctrl *ctrl_data, struct
 void xid_map_fb_to_generic(int32_t dev_mode, struct raw_fb *raw_fb_data, struct generic_fb *fb_data);
 // The console's rumble (XID output report motors) for output wired_id
 void xid_map_rumble(uint8_t wired_id, uint16_t left, uint16_t right);
+// Whether output index holds Home and Start now (its last from_generic): the console's
+// power button. The original pad has no Home, so it reaches the console as nothing else.
+bool xid_map_power_combo(uint8_t index);
 
 #ifdef __cplusplus
 }

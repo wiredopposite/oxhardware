@@ -46,8 +46,8 @@ ESP32 strapping pins (IO0, IO2, IO5, IO12, IO15) are not used, so an unconfigure
 
 | Signal | UPduino | Notes |
 |---|---|---|
-| LCLK | 37 | 33 Ω |
-| LRESET# | 32 | 100 Ω |
+| LCLK | 37 | 33 Ω; 100 kΩ to GND on the FPGA side (undriven while the console is off) |
+| LRESET# | 32 | 100 Ω; 100 kΩ to GND on the FPGA side |
 | LAD0 / LAD1 / LAD2 / LAD3 | 34 / 43 / 36 / 42 | 33 Ω |
 | LFRAME# MOSFET gate | 31 (+ 25 / 26 / 27) | 04-hardware §4.2 |
 | LFRAME# sense | 23 | |
@@ -61,9 +61,11 @@ ESP32 strapping pins (IO0, IO2, IO5, IO12, IO15) are not used, so an unconfigure
 |---|---|---|---|
 | SMBus SDA | 14 | IO33 (J3-7) | Console pull-ups only |
 | SMBus SCL | 13 | IO13 (J3-11) | |
+| Power button | front panel, power switch line | IO4 | ESP32 open-drain, low = pressed; console pull-up (standby) |
+| Eject button | front panel, eject switch line | IO8 | Same |
 
 ## 5. Pins in use
 
 **UPduino**: 2, 4, 13, 14–17 (flash), 18, 19, 20 (12 MHz), 23, 25, 26, 27, 31, 32, 34, 36, 37, 38, 39–41 (LED), 42, 43, 44, 45, 46, 47, 48. Pin 35 is unusable while the PLL runs. Free: 3, 6, 9, 10, 11, 12, 21, 28.
 
-**ESP32 devkit**: IO1/IO3 (USB UART), 13, 19, 20, 21, 22, 25, 26, 27, 32, 33, 34, 35, 36. Free: 4, 7, 8, 14, 37, 38, 39 (and strapping pins 0, 2, 5, 12, 15 with care).
+**ESP32 devkit**: IO1/IO3 (USB UART), 4, 8, 13, 19, 20, 21, 22, 25, 26, 27, 32, 33, 34, 35, 36. Free: 7, 14 (pulses during boot), 37, 38, 39 (and strapping pins 0, 2, 5, 12, 15 with care).

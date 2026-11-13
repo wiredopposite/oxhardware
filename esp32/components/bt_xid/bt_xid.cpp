@@ -3,7 +3,9 @@
 #include <cstring>
 
 #include "blueretro.h"
+#include "console.hpp"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "host_link.hpp"
 #include "usb_dev.hpp"
 #include "xid_map.h"
@@ -25,8 +27,13 @@ constexpr uint16_t CmdForget = 0x0803;     // all controllers: disconnect, clear
 // first output with a controller, and the next one when that controller goes.
 constexpr int NoOutput = -1;
 
+// Home + Start held this long on any controller presses the console's power button
+constexpr uint64_t PowerComboUs = 4 * 1000 * 1000;
+
 bool Started;
 volatile int PadOutput = NoOutput;      // written by the Bluetooth tasks only
+uint32_t ComboHeld;                     // outputs holding Home + Start (Bluetooth tasks)
+esp_timer_handle_t ComboTimer;
 
 void Adopt(int index)
 {
@@ -37,14 +44,34 @@ void Adopt(int index)
     UsbDev::SetPadPresent(index != NoOutput);
     if (index != NoOutput) {
         ESP_LOGI(Tag, "pad: controller on output %d", index);
+        Console::WakeIfOff();       // with standby power: the controller turns the console on
     } else {
         ESP_LOGI(Tag, "pad: no controller");
+    }
+}
+
+void ComboExpired(void *)
+{
+    ESP_LOGI(Tag, "Home + Start: power button");
+    Console::Press(Console::Button::Power);
+}
+
+// The timer runs while any output holds the combo, from the first to hold it
+void Combo(uint8_t index, bool held)
+{
+    const uint32_t was = ComboHeld;
+    ComboHeld = held ? was | (1u << index) : was & ~(1u << index);
+    if (!was && ComboHeld) {
+        esp_timer_start_once(ComboTimer, PowerComboUs);
+    } else if (was && !ComboHeld) {
+        esp_timer_stop(ComboTimer);
     }
 }
 
 void Updated(uint8_t index)
 {
     const wired_data &d = wired_adapter.data[index];
+    Combo(index, d.connected && xid_map_power_combo(index));
     if (PadOutput == NoOutput) {
         if (d.connected) {
             Adopt(index);
@@ -94,11 +121,30 @@ const blueretro_output_t Output = {
     .updated = Updated,
 };
 
+// BlueRetro's reset macros restart the ESP32: not while the console is on and using the
+// pad (and the BIOS, the mailbox)
+bool RestartOk()
+{
+    const Console::State s = Console::Get();
+    return s == Console::State::Off || s == Console::State::Unknown;
+}
+
 }
 
 void Start()
 {
+    const esp_timer_create_args_t timer = {
+        .callback = ComboExpired,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "bt_combo",
+        .skip_unhandled_events = true,
+    };
+    esp_timer_create(&timer, &ComboTimer);
     blueretro_set_log(Log);
+    blueretro_set_restart_hook(RestartOk);
+    // Controllers off with the console: they reconnect, and wake it, on their Home button
+    Console::OnShutdown(blueretro_disconnect_all);
     UsbDev::OnRumble(Rumble);
     UsbDev::SetPadPresent(false);      // until a controller connects
     // The configuration page has no authentication: closed until asked for. Firmware

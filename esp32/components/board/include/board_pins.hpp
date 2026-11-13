@@ -22,6 +22,11 @@ inline constexpr gpio_num_t CfgMiso = GPIO_NUM_36;
 inline constexpr gpio_num_t FpgaCreset = GPIO_NUM_25;
 inline constexpr gpio_num_t FpgaCdone = GPIO_NUM_35;
 
+// Xbox front-panel buttons: open-drain, pulled low to press (the console pulls them up
+// from standby). Not strapping pins, so the ESP32's boot never presses them.
+inline constexpr gpio_num_t PowerBtn = GPIO_NUM_4;
+inline constexpr gpio_num_t EjectBtn = GPIO_NUM_8;
+
 // Xbox SMBus (console pull-ups)
 inline constexpr gpio_num_t SmbSda = GPIO_NUM_33;
 inline constexpr gpio_num_t SmbScl = GPIO_NUM_13;

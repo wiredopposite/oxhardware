@@ -1,5 +1,7 @@
 #include "usb_dev.hpp"
 
+#include <cstring>
+
 #include "dcd_fpga.h"
 #include "fpga_link.hpp"
 #include "fpga_svc.hpp"
@@ -8,6 +10,7 @@
 #include "hid_test.h"
 #include "host_link.hpp"
 #include "hub.h"
+#include "xid_pad.h"
 
 namespace UsbDev {
 
@@ -22,31 +25,36 @@ constexpr uint16_t FeatureUsb = 1u << 4;
 constexpr uint16_t CmdStart = 0x0700;      // u8 profile
 constexpr uint16_t CmdStop = 0x0701;
 constexpr uint16_t CmdStatus = 0x0702;
-constexpr uint16_t CmdPlug = 0x0703;       // u8 plugged: the test gamepad on hub port 1
+constexpr uint16_t CmdPlug = 0x0703;       // u8 plugged: the gamepad on hub port 1
+constexpr uint16_t CmdPad = 0x0704;        // xid_in_t: the Xbox gamepad's state
 
 // Without an interrupt the task still looks this often: the functions have timed work
 constexpr TickType_t IdleTicks = pdMS_TO_TICKS(2);
 // Polls per wakeup at most, while events keep coming
 constexpr int Burst = 16;
 constexpr uint8_t HubPorts = 4;
+constexpr uint8_t XboxHubPorts = 3;     // a controller: pad, two MU slots
 
 TaskHandle_t Task;
 volatile bool StartReq, StopReq, Running;
 volatile int8_t PlugReq = -1;       // -1 none, 0 unplug, 1 plug
 constexpr uint8_t PadPort = 1;
-Profile Want;
+Profile Want, Current;
 usbd_handle_t *Hub, *Pad;
+
+bool IsXid() { return Current == Profile::Xbox; }
 
 // Device 0 first: with a hub, everything else sits behind it
 bool Start(Profile profile)
 {
-    if (profile == Profile::HubTest) {
-        Hub = hub_init(HubPorts);
+    Current = profile;
+    if (profile != Profile::HidTest) {
+        Hub = profile == Profile::Xbox ? hub_init(XboxHubPorts, 8) : hub_init(HubPorts, 64);
         if (Hub == nullptr) {
             return false;
         }
     }
-    Pad = hid_test_init();
+    Pad = IsXid() ? xid_pad_init() : hid_test_init();
     if (Pad == nullptr || (Hub != nullptr && !hub_attach(PadPort, Pad))) {
         usbd_deinit(USBD_HW_FPGA);
         Hub = Pad = nullptr;
@@ -90,7 +98,11 @@ void Run(void *)
             const bool ev = dcd_fpga_poll();
             usbd_task();
             hub_task(Hub);
-            hid_test_task(Pad);
+            if (IsXid()) {
+                xid_pad_task(Pad);
+            } else {
+                hid_test_task(Pad);
+            }
             if (!ev && !dcd_fpga_pending()) {
                 break;
             }
@@ -120,7 +132,7 @@ void RegisterCommands()
     // u8 profile
     HostLink::Register(CmdStart, [](HostLink::Args &args, HostLink::Reply &reply) {
         const uint8_t profile = args.U8();
-        if (args.Bad() || profile > uint8_t(Profile::HubTest)) {
+        if (args.Bad() || profile > uint8_t(Profile::Xbox)) {
             reply.Fail(HostLink::Error::BadArgs);
             return;
         }
@@ -168,6 +180,26 @@ void RegisterCommands()
             vTaskDelay(pdMS_TO_TICKS(2));
         }
     });
+    // xid_in_t (18 bytes) -> xid_out_t (4 bytes, the last rumble), u32 rumble reports
+    HostLink::Register(CmdPad, [](HostLink::Args &args, HostLink::Reply &reply) {
+        xid_in_t in;
+        const uint8_t *p = args.Bytes(sizeof(in));
+        if (args.Bad()) {
+            reply.Fail(HostLink::Error::BadArgs);
+            return;
+        }
+        if (!Running || !IsXid()) {
+            reply.Fail(HostLink::Error::Failed, "Xbox profile not running");
+            return;
+        }
+        memcpy(&in, p, sizeof(in));
+        xid_pad_set(&in);
+        xTaskNotifyGive(Task);
+        xid_out_t out;
+        xid_pad_rumble(&out);
+        reply.Put(reinterpret_cast<const uint8_t *>(&out), sizeof(out));
+        reply.PutU32(xid_pad_rumbles());
+    });
     // -> u8 running, u8 gamepad state, u32 reports, u32 out packets, u32 x7 driver counts,
     //    u8 x8 device addresses, u8 hub state (0xFF: no hub)
     HostLink::Register(CmdStatus, [](HostLink::Args &, HostLink::Reply &reply) {
@@ -176,8 +208,8 @@ void RegisterCommands()
         usbd_handle_t *dev = Pad;
         reply.PutU8(Running ? 1 : 0);
         reply.PutU8(dev != nullptr ? uint8_t(dev->state) : 0);
-        reply.PutU32(hid_test_reports());
-        reply.PutU32(hid_test_out_packets());
+        reply.PutU32(IsXid() ? xid_pad_reports() : hid_test_reports());
+        reply.PutU32(IsXid() ? xid_pad_rumbles() : hid_test_out_packets());
         reply.PutU32(s.polls);
         reply.PutU32(s.bus_resets);
         reply.PutU32(s.setups);

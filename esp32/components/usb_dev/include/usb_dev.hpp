@@ -11,6 +11,7 @@ namespace UsbDev {
 enum class Profile : uint8_t {
     HidTest = 0,        // one HID gamepad, for bring-up on a PC
     HubTest = 1,        // a 4-port hub with the test gamepad on port 1
+    Xbox = 2,           // a controller: 3-port hub, XID gamepad on port 1 (2, 3: MU slots)
 };
 
 void RegisterCommands();

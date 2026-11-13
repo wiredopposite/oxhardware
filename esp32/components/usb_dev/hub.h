@@ -15,7 +15,8 @@ extern "C" {
 
 #define HUB_PORTS_MAX   7U      // the status change bitmap is one byte
 
-usbd_handle_t *hub_init(uint8_t ports);     // before any device behind it
+// Before any device behind it; ep0_size 8 or 64
+usbd_handle_t *hub_init(uint8_t ports, uint8_t ep0_size);
 bool hub_attach(uint8_t port, usbd_handle_t *dev);     // port 1..ports
 usbd_handle_t *hub_detach(uint8_t port);                // the device unplugged, or NULL
 void hub_task(usbd_handle_t *handle);

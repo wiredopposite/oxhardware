@@ -10,21 +10,20 @@
 #include "usb_def.h"
 #include "usb_util.h"
 
-#define EP0_SIZE        64U
 #define EPADDR_STATUS   (1U | USB_EP_DIR_IN)
 
 #define BIT(f)          (1UL << (f))
 #define PORT_STATUS_MSK (BIT(USB_FEATURE_PORT_CONNECTION) | BIT(USB_FEATURE_PORT_ENABLE) | \
                          BIT(USB_FEATURE_PORT_SUSPEND) | BIT(USB_FEATURE_PORT_RESET))
 
-static const usb_desc_device_t DescDevice = {
+static usb_desc_device_t DescDevice = {
     .bLength            = sizeof(usb_desc_device_t),
     .bDescriptorType    = USB_DTYPE_DEVICE,
     .bcdUSB             = USB_BCD_VERSION_1_1,
     .bDeviceClass       = USB_CLASS_HUB,
     .bDeviceSubClass    = USB_SUBCLASS_HUB,
     .bDeviceProtocol    = USB_PROTOCOL_HUB_FULL_SPEED,
-    .bMaxPacketSize0    = EP0_SIZE,
+    .bMaxPacketSize0    = 64,
     .idVendor           = 0x1209,   // pid.codes test VID/PID
     .idProduct          = 0x0002,
     .bcdDevice          = 0x0100,
@@ -305,9 +304,9 @@ static void ep_xfer_cb(usbd_handle_t *handle, uint8_t epaddr)
     (void)epaddr;
 }
 
-usbd_handle_t *hub_init(uint8_t ports)
+usbd_handle_t *hub_init(uint8_t ports, uint8_t ep0_size)
 {
-    if (ports == 0 || ports > HUB_PORTS_MAX) {
+    if (ports == 0 || ports > HUB_PORTS_MAX || (ep0_size != 8 && ep0_size != 64)) {
         return NULL;
     }
     const usbd_driver_t driver = {
@@ -320,9 +319,10 @@ usbd_handle_t *hub_init(uint8_t ports)
         .ep_xfer_cb     = ep_xfer_cb,
     };
     memset(Port, 0, sizeof(Port));
+    DescDevice.bMaxPacketSize0 = ep0_size;
     Ports = ports;
     Changed = 0;
-    usbd_handle_t *handle = usbd_init(USBD_HW_FPGA, &driver, EP0_SIZE);
+    usbd_handle_t *handle = usbd_init(USBD_HW_FPGA, &driver, ep0_size);
     if (handle != NULL && handle->port != 0) {
         usbd_deinit(USBD_HW_FPGA);      // a hub must be device 0
         return NULL;

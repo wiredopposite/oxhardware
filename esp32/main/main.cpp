@@ -1,5 +1,6 @@
 #include "bt_xid.hpp"
 #include "cfg_bus.hpp"
+#include "chip_update.hpp"
 #include "console.hpp"
 #include "esp_log.h"
 #include "fpga_link.hpp"
@@ -26,6 +27,7 @@ extern "C" void app_main(void)
     Console::Start();
     Console::RegisterCommands();
     Nor::Init();
+    ChipUpdate::Start();        // the FPGA's bitstream back if it doesn't configure
     Nor::RegisterCommands();
     Smbus::Init();
     Smbus::RegisterCommands();

@@ -56,7 +56,7 @@ CRC-32 is IEEE (zlib). The chip answers every command with exactly one reply car
 | | 4 SetUser | `RomRef` | The power-button ROM, `0xFF` for none |
 | | 5 Compact | `RomCompact` → `RomCompactStep` | Moves one entry towards a free run of `ImageSize`; repeat until `Moved` is `0xFF` |
 
-Upload types: retail tables, user ROM, Loader, System, Diag, ESP32 firmware, FPGA bitstream. Download types: retail tables, a catalogue entry, the ROM being served.
+Upload types: retail tables, user ROM, Loader, System, Diag, ESP32 firmware, FPGA bitstream. The last two update the chip itself with the console running (03-esp32 §4a): the bitstream's Commit writes and reloads the FPGA (a few seconds), the firmware's Commit replies and then restarts the ESP32; neither replies with an entry. Download types: retail tables, a catalogue entry, the ROM being served.
 
 Commit flags: `Trial` (Loader, System: boot once on trial, current only after confirming); `User` (make a user ROM the power-button ROM); `Boot` (boot it from the console's next reset). An upload from the console of a Loader or System is always on trial.
 

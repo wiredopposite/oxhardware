@@ -155,14 +155,16 @@ bool Read(uint32_t addr, uint8_t *buf, size_t len)
     return a.Ok() && CfgBus::Read(addr, buf, len);
 }
 
-bool Erase(uint32_t addr, uint32_t len)
+namespace {
+
+bool DoErase(uint32_t addr, uint32_t len, bool bitstream)
 {
     if ((addr | len) & (Sector - 1)) {
         return false;
     }
     Guard g;
     Access a;
-    if (!a.Ok() || Protected(a, addr)) {
+    if (!a.Ok() || (!bitstream && Protected(a, addr))) {
         return false;
     }
     if (!CfgBus::Erase(addr, len)) {
@@ -172,11 +174,11 @@ bool Erase(uint32_t addr, uint32_t len)
     return true;
 }
 
-bool Write(uint32_t addr, const uint8_t *data, size_t len)
+bool DoWrite(uint32_t addr, const uint8_t *data, size_t len, bool bitstream)
 {
     Guard g;
     Access a;
-    if (!a.Ok() || Protected(a, addr)) {
+    if (!a.Ok() || (!bitstream && Protected(a, addr))) {
         return false;
     }
     if (!CfgBus::Write(addr, data, len)) {
@@ -184,6 +186,29 @@ bool Write(uint32_t addr, const uint8_t *data, size_t len)
         return false;
     }
     return true;
+}
+
+}
+
+bool Erase(uint32_t addr, uint32_t len)
+{
+    return DoErase(addr, len, false);
+}
+
+bool Write(uint32_t addr, const uint8_t *data, size_t len)
+{
+    return DoWrite(addr, data, len, false);
+}
+
+bool EraseBitstream(uint32_t len)
+{
+    return len <= BitstreamArea && DoErase(0, len, true);
+}
+
+bool WriteBitstream(uint32_t addr, const uint8_t *data, size_t len)
+{
+    return addr <= BitstreamArea && len <= BitstreamArea - addr &&
+           DoWrite(addr, data, len, true);
 }
 
 bool Crc32(uint32_t addr, uint32_t len, uint32_t *crc)

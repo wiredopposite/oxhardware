@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "cfg_bus.hpp"
+#include "chip_update.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "fpga_link.hpp"
@@ -820,12 +821,12 @@ Status UploadBegin(const uint8_t *in, size_t len)
     case UploadType::LoaderRom: kind = Role::Loader; break;
     case UploadType::SystemRom: kind = Role::System; break;
     case UploadType::DiagRom: kind = Role::Diag; break;
-    default: return Status::BadCommand;     // retail tables and the chip's own firmware: later
+    default: return Status::BadCommand;     // retail tables: later
     }
     if (!SizeOk(kind, b.ImageSize)) {
         return Status::BadSize;
     }
-    if (UploadLive()) {
+    if (UploadLive() || ChipUpdate::Active()) {
         return Status::ProgrammerBusy;
     }
     const Status st = Ensure();
@@ -1138,14 +1139,39 @@ Status Rom(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &
 Status Upload(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
 {
     Guard g;
+    // The bitstream and the ESP32 firmware are the chip's own: chip_update has them
+    const bool chip = ChipUpdate::Active();
     switch (UploadAction(action)) {
-    case UploadAction::Begin:
+    case UploadAction::Begin: {
+        OxProg::UploadBegin b;
+        if (len >= sizeof(b.Type) && ChipUpdate::Handles(UploadType(in[0]))) {
+            if (!Take(in, len, b)) {
+                return Status::BadSize;
+            }
+            return UploadLive() ? Status::ProgrammerBusy : ChipUpdate::Begin(b.Type, b.ImageSize);
+        }
         return UploadBegin(in, len);
+    }
     case UploadAction::Write:
+        if (chip) {
+            if (len <= offsetof(OxProg::UploadWrite, Data)) {
+                return Status::BadSize;
+            }
+            uint32_t off;
+            memcpy(&off, in, sizeof(off));
+            return ChipUpdate::Write(off, in + offsetof(OxProg::UploadWrite, Data),
+                                     len - offsetof(OxProg::UploadWrite, Data));
+        }
         return UploadWrite(in, len);
     case UploadAction::Commit:
+        if (chip) {
+            OxProg::UploadCommit c;
+            Take(in, len, c);
+            return ChipUpdate::Commit(c.Crc32);
+        }
         return UploadCommit(in, len, out, out_len);
     case UploadAction::Abort:
+        ChipUpdate::Abort();
         Up.Active = false;
         return Status::Ok;
     default:

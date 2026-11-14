@@ -29,6 +29,7 @@
     py -3 tools/oxctl.py -p COM12 rom list                      # ROM library (docs/03 §5)
     py -3 tools/oxctl.py -p COM12 rom upload FILE [--name N] [--type user|loader|system|diag] [--user] [--boot] [--trial] [--reset] [--compact]
     py -3 tools/oxctl.py -p COM12 rom compact SIZE                # e.g. 1M: move entries to free a run
+    py -3 tools/oxctl.py -p COM12 update fpga|esp32 FILE   # the chip's own: bitstream (hot reload), firmware (restarts)
     py -3 tools/oxctl.py -p COM12 rom download ID|active OUT
     py -3 tools/oxctl.py -p COM12 rom delete|user ID
     py -3 tools/oxctl.py -p COM12 rom rename ID NAME
@@ -464,6 +465,31 @@ def cmd_prog(link, a):
         print("trial boot confirmed")
 
 
+CHIP_UPLOAD_TYPES = {"esp32": 5, "fpga": 6}
+
+
+def cmd_update(link, a):
+    data = open(a.file, "rb").read()
+    t0 = time.time()
+    prog(link, MODE_UPLOAD, UP_BEGIN,
+         struct.pack("<BBHI33s", CHIP_UPLOAD_TYPES[a.what], 0, 0, len(data), b""))
+    try:
+        for off in range(0, len(data), 4092):
+            prog(link, MODE_UPLOAD, UP_WRITE, struct.pack("<I", off) + data[off:off + 4092])
+            print(f"\rsent {min(off + 4092, len(data))}/{len(data)}", end="", flush=True)
+        print()
+        prog(link, MODE_UPLOAD, UP_COMMIT, struct.pack("<IIHBB", zlib.crc32(data), 0, 0, 0, 0),
+             timeout=60)
+    except LinkError:
+        try:
+            prog(link, MODE_UPLOAD, UP_ABORT)
+        except LinkError:
+            pass
+        raise
+    print(f"{a.what} updated in {time.time() - t0:.1f} s"
+          + (", the ESP32 restarts" if a.what == "esp32" else ", FPGA reloaded"))
+
+
 def rom_entries(body):
     for k in range(0, len(body) - ROM_ENTRY.size + 1, ROM_ENTRY.size):
         yield ROM_ENTRY.unpack_from(body, k)
@@ -613,6 +639,9 @@ def main():
     s = sub.add_parser("prog")
     s.add_argument("what", choices=["info", "smbus-read", "smbus-write", "confirm"])
     s.add_argument("args", nargs="*", type=lambda x: int(x, 0))
+    s = sub.add_parser("update")
+    s.add_argument("what", choices=["fpga", "esp32"])
+    s.add_argument("file")
     s = sub.add_parser("rom")
     s.add_argument("what", choices=["list", "upload", "download", "delete", "rename", "user",
                                     "boot", "compact"])
@@ -665,6 +694,8 @@ def main():
             cmd_nor(link, a)
         elif a.group == "rom":
             cmd_rom(link, a)
+        elif a.group == "update":
+            cmd_update(link, a)
         elif a.group == "prog":
             if a.what.startswith("smbus") and len(a.args) < 2:
                 sys.exit(f"prog {a.what}: ADDR REG required")

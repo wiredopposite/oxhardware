@@ -40,8 +40,10 @@ Stats St;
 volatile bool Rearm;            // Notify's wakeup, not the pin's
 
 // Level-triggered: the ISR masks itself and the task unmasks it once IRQ_STATUS is clear,
-// so a stuck or floating pin costs one wakeup per pass
-void IRAM_ATTR Isr(void *)
+// so a stuck or floating pin costs one wakeup per pass. Not an IRAM interrupt: it calls
+// the GPIO driver, which is in flash, and waits out the ESP32's own flash writes (firmware
+// updates).
+void Isr(void *)
 {
     gpio_intr_disable(Pins::FpgaIrq);
     BaseType_t woken = pdFALSE;
@@ -133,7 +135,7 @@ void Start()
     io.intr_type = GPIO_INTR_DISABLE;
     gpio_config(&io);
     xTaskCreate(Task, "fpga_svc", 3072, nullptr, 10, &Svc);
-    const esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    const esp_err_t err = gpio_install_isr_service(0);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(Tag, "no GPIO ISR service: %s", esp_err_to_name(err));
         return;

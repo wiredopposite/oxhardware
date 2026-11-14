@@ -82,6 +82,8 @@ class Link:
         self.ser.rts = False
 
     def close(self):
+        if self.stop:
+            return
         self.stop = True
         self.rx.join()
         self.ser.close()

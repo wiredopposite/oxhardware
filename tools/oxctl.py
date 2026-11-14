@@ -43,6 +43,8 @@
     py -3 tools/oxctl.py -p COM12 usb plug|unplug        # its gamepad on hub port 1
     py -3 tools/oxctl.py -p COM12 usb pad a start --lx 20000  # hold buttons
     py -3 tools/oxctl.py -p COM12 bt status|pair on|off|config on|off|forget  # Bluetooth
+    py -3 tools/oxctl.py -p COM12 kd debug BIOS --com COM13   # upload, reboot into it, bridge
+    py -3 tools/oxctl.py kd bridge|probe|kill --com COM13     # the kernel debugger on COM
 
 fpga id/read/write hold the FPGA in reset (CRESET low) for the duration: the Xbox
 loses its BIOS meanwhile, and iceprog must not be running.
@@ -50,6 +52,10 @@ loses its BIOS meanwhile, and iceprog must not be running.
     py -3 tools/oxctl.py -p COM12 monitor --reset    # reset the ESP32 first (boot log)
 
 The port can also come from the OXCTL_PORT environment variable.
+kd debug uploads a KD build as the power-button ROM named --name (replacing the last one),
+armed for the next boot, reboots the console into it, waits for the kernel's boot break and
+bridges COM to TCP 2345 for lldb (gdb-remote 2345). The COM port, from OXKD_COM, is bridge
+channel B: only kd uses it, so it needs no -p.
 """
 import argparse
 import os
@@ -58,6 +64,7 @@ import sys
 import time
 import zlib
 
+import oxkd
 from oxlink import Link, LinkError, Reader, wait_forever
 
 SYS_PING, SYS_VERSION, SYS_STATUS, SYS_REBOOT = 0x0000, 0x0001, 0x0002, 0x0003
@@ -535,18 +542,100 @@ def rom_name(raw):
     return raw.split(b"\0", 1)[0].decode(errors="replace")
 
 
+def rom_list(link):
+    rows, first = [], 0
+    while True:
+        got = list(rom_entries(prog(link, MODE_ROM, ROM_LIST, bytes([first]))))
+        rows += got
+        if len(got) < 4096 // ROM_ENTRY.size or not got:
+            return rows
+        first = got[-1][0] + 1
+
+
+def rom_upload(link, data, kind, name, flags, compact):
+    """Uploads and commits; returns the commit reply."""
+    begin = struct.pack("<BBHI33s", UPLOAD_TYPES[kind], 0, 0, len(data), name.encode()[:32])
+    try:
+        prog(link, MODE_UPLOAD, UP_BEGIN, begin)
+    except ProgError as e:
+        if e.status != PROG_STATUS.index("Fragmented"):
+            raise
+        if not compact:
+            sys.exit("no free run of that size until entries are moved: "
+                     "add --compact, or run rom compact first")
+        rom_compact(link, len(data))
+        prog(link, MODE_UPLOAD, UP_BEGIN, begin)
+    try:
+        for off in range(0, len(data), 4092):
+            prog(link, MODE_UPLOAD, UP_WRITE, struct.pack("<I", off) + data[off:off + 4092])
+            print(f"\rwritten {min(off + 4092, len(data))}/{len(data)}", end="", flush=True)
+        print()
+        return prog(link, MODE_UPLOAD, UP_COMMIT,
+                    struct.pack("<IIHBB", zlib.crc32(data), 0, 0, flags, 0))
+    except LinkError:
+        try:
+            prog(link, MODE_UPLOAD, UP_ABORT)
+        except LinkError:
+            pass
+        raise
+
+
+# ---------------------------------------------------------------- kernel debugger
+def kd_session(link, com, a):
+    """Uploads the BIOS as the power-button ROM, armed for the next boot, in place of the last
+    one with its name, reboots the console into it and waits for the kernel's boot break."""
+    data = open(a.file, "rb").read()
+    state = link.request(CONSOLE_STATE)[0]
+    for row in rom_list(link):
+        if row[1] == ROLES.index("user") and rom_name(row[9]) == a.name:
+            prog(link, MODE_ROM, ROM_DELETE, bytes([row[0]]))
+    print(f"==> Uploading {a.file} ({len(data)} bytes)", flush=True)
+    rom_upload(link, data, "user", a.name, 0x02 | 0x04, True)
+
+    print("==> Rebooting the Xbox", flush=True)
+    if state == CONSOLE_STATES.index("off"):
+        link.request(CONSOLE_PRESS, bytes([0]))
+    elif oxkd.probe(com, 1):
+        oxkd.kill(com)
+        time.sleep(3)
+    else:
+        link.request(SMC_POWER, bytes([0x01]))
+
+    print("==> Waiting for the kernel debugger", flush=True)
+    stop = oxkd.probe(com, a.wait)
+    if stop is None:
+        # Hung with interrupts off, or the old kernel had no debugger stopped
+        print("==> No answer, resetting it through the SMC", flush=True)
+        link.request(SMC_POWER, bytes([0x01]))
+        stop = oxkd.probe(com, a.wait)
+    if stop is None:
+        sys.exit(f"The kernel debugger never answered on {a.com}: check the BIOS is a KD build, "
+                 "and the COM port and baud")
+    print(f"==> Kernel stopped at its boot break ({stop})", flush=True)
+
+
+def cmd_kd(link, com, a):
+    if a.what == "probe":
+        stop = oxkd.probe(com, a.wait)
+        if stop is None:
+            sys.exit("no answer")
+        print(f"stopped ({stop})")
+    elif a.what == "kill":
+        oxkd.kill(com)
+        print("kill sent")
+    elif a.what == "debug":
+        kd_session(link, com, a)
+        link.close()
+        oxkd.bridge(com, a.tcp, a.traffic)
+    elif a.what == "bridge":
+        oxkd.bridge(com, a.tcp, a.traffic)
+
+
 def cmd_rom(link, a):
     args = a.args
     need = lambda n, usage: len(args) >= n or sys.exit(f"rom {a.what}: {usage}")
     if a.what == "list":
-        rows, first = [], 0
-        while True:
-            body = prog(link, MODE_ROM, ROM_LIST, bytes([first]))
-            got = list(rom_entries(body))
-            rows += got
-            if len(got) < 4096 // ROM_ENTRY.size or not got:
-                break
-            first = got[-1][0] + 1
+        rows = rom_list(link)
         if not rows:
             print("catalogue empty")
         for (eid, role, bank, flags, size, crc, src, ver, _, name) in rows:
@@ -556,33 +645,10 @@ def cmd_rom(link, a):
     elif a.what == "upload":
         need(1, "FILE [--name N] [--type T] [--user] [--boot]")
         data = open(args[0], "rb").read()
-        name = (a.name or os.path.splitext(os.path.basename(args[0]))[0]).encode()[:32]
+        name = a.name or os.path.splitext(os.path.basename(args[0]))[0]
         flags = (0x01 if a.trial else 0) | (0x02 if a.user else 0) | (0x04 if a.boot else 0)
-        begin = struct.pack("<BBHI33s", UPLOAD_TYPES[a.type], 0, 0, len(data), name)
-        try:
-            prog(link, MODE_UPLOAD, UP_BEGIN, begin)
-        except ProgError as e:
-            if e.status != PROG_STATUS.index("Fragmented"):
-                raise
-            if not a.compact:
-                sys.exit("no free run of that size until entries are moved: "
-                         "add --compact, or run rom compact first")
-            rom_compact(link, len(data))
-            prog(link, MODE_UPLOAD, UP_BEGIN, begin)
         t0 = time.time()
-        try:
-            for off in range(0, len(data), 4092):
-                prog(link, MODE_UPLOAD, UP_WRITE, struct.pack("<I", off) + data[off:off + 4092])
-                print(f"\rwritten {min(off + 4092, len(data))}/{len(data)}", end="", flush=True)
-            print()
-            body = prog(link, MODE_UPLOAD, UP_COMMIT,
-                        struct.pack("<IIHBB", zlib.crc32(data), 0, 0, flags, 0))
-        except LinkError:
-            try:
-                prog(link, MODE_UPLOAD, UP_ABORT)
-            except LinkError:
-                pass
-            raise
+        body = rom_upload(link, data, a.type, name, flags, a.compact)
         e = ROM_ENTRY.unpack_from(body)
         print(f"entry {e[0]}: slot {e[2] & 0x3F}, {e[4] // 1024} K, CRC {e[5]:08X}, "
               f"{time.time() - t0:.1f} s"
@@ -705,7 +771,31 @@ def main():
     s.add_argument("state", nargs="?", help="pair, config: on or off")
     s = sub.add_parser("monitor")
     s.add_argument("--reset", action="store_true", help="reset the ESP32 after opening")
+    s = sub.add_parser("kd", help="the kernel debugger on the console's COM port")
+    s.add_argument("what", choices=["debug", "bridge", "probe", "kill"])
+    s.add_argument("file", nargs="?", help="debug: the BIOS to run")
+    s.add_argument("--com", default=os.environ.get("OXKD_COM"),
+                   help="COM port of bridge channel B, or OXKD_COM")
+    s.add_argument("--com-baud", type=int, default=115200, help="the FPGA's UART_DIV baud")
+    s.add_argument("--tcp", type=int, default=2345, help="debug, bridge: TCP port for lldb")
+    s.add_argument("--name", default="kd", help="debug: ROM name, replaced on each run")
+    s.add_argument("--wait", type=float, default=20, help="debug, probe: seconds to wait")
+    s.add_argument("--traffic", action="store_true", help="debug, bridge: print the RSP traffic")
     a = p.parse_args()
+
+    com = None
+    if a.group == "kd":
+        if not a.com:
+            sys.exit("no COM port: use --com COMx or set OXKD_COM")
+        if a.what == "debug" and not a.file:
+            sys.exit("kd debug: file required")
+        com = oxkd.open_com(a.com, a.com_baud)
+        if a.what != "debug":
+            try:
+                cmd_kd(None, com, a)
+            except KeyboardInterrupt:
+                pass
+            return
     if not a.port:
         sys.exit("no port: use -p COMx or set OXCTL_PORT")
 
@@ -716,7 +806,9 @@ def main():
                 on_event=(lambda i, d: None) if quiet else None,
                 on_text=(lambda b: None) if quiet else show_text)
     try:
-        if a.group == "sys":
+        if a.group == "kd":
+            cmd_kd(link, com, a)
+        elif a.group == "sys":
             cmd_sys(link, a)
         elif a.group == "fpga":
             if a.what in ("read", "write") and not a.file:

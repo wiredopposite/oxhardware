@@ -173,6 +173,35 @@ bool Save()
     return true;
 }
 
+// ------------------------------------------------------------ retail tables
+// What the System BIOS is built from (the console's own retail BIOS's tables), kept for
+// the console: after the two catalogue copies, a header sector written last, then the
+// tables. One copy: an upload cut off leaves none, and the host uploads them again.
+constexpr uint32_t TablesMagic = 0x4C425458;    // "XTBL" in flash byte order
+constexpr uint32_t TablesArea = 32 * 1024;
+constexpr uint32_t TablesMax = TablesArea - CatSector;
+
+#pragma pack(push, 1)
+struct TablesHeader {
+    uint32_t Magic;
+    uint32_t Size;
+    uint32_t Crc32;
+    uint32_t SourceCrc32;       // what the host made them from (its retail BIOS)
+    uint32_t Check;             // ~Magic ^ Size ^ Crc32 ^ SourceCrc32
+};
+#pragma pack(pop)
+
+uint32_t TablesAddr() { return L.CatAddr + 2 * CatSector; }
+uint32_t TablesData() { return TablesAddr() + CatSector; }
+
+bool ReadTables(TablesHeader &h)
+{
+    return Nor::Read(TablesAddr(), reinterpret_cast<uint8_t *>(&h), sizeof(h)) &&
+           h.Magic == TablesMagic &&
+           h.Check == (~TablesMagic ^ h.Size ^ h.Crc32 ^ h.SourceCrc32) && h.Size != 0 &&
+           h.Size <= TablesMax;
+}
+
 int FindFlag(Role kind, uint8_t flag)
 {
     for (int i = 0; i < EntriesMax; i++) {
@@ -780,10 +809,11 @@ constexpr uint32_t Block = 64 * 1024;
 
 struct UploadState {
     bool Active;
+    bool Tables;                // the retail tables, not a ROM
     Role Kind;
     uint8_t Bank;
     uint32_t Size;
-    uint16_t Erased;            // 64 K blocks erased so far
+    uint16_t Erased;            // erase units done so far (ROMs: 64 K blocks, tables: sectors)
     int64_t Last;
     char Name[NameMax];
 } Up;
@@ -815,13 +845,36 @@ Status UploadBegin(const uint8_t *in, size_t len)
     if (!Take(in, len, b)) {
         return Status::BadSize;
     }
+    if (b.Type == UploadType::RetailTables) {
+        if (b.ImageSize == 0 || b.ImageSize > TablesMax) {
+            return Status::BadSize;
+        }
+        if (UploadLive() || ChipUpdate::Active()) {
+            return Status::ProgrammerBusy;
+        }
+        const Status st = Ensure();
+        if (st != Status::Ok) {
+            return st;
+        }
+        // The old tables are gone from here on: the header is what makes them valid
+        if (!Nor::Erase(TablesAddr(), CatSector)) {
+            return Status::FlashError;
+        }
+        Up = {};
+        Up.Active = true;
+        Up.Tables = true;
+        Up.Size = b.ImageSize;
+        Up.Last = esp_timer_get_time();
+        ESP_LOGI(Tag, "retail tables upload, %lu bytes", (unsigned long)Up.Size);
+        return Status::Ok;
+    }
     Role kind;
     switch (b.Type) {
     case UploadType::UserRom: kind = Role::User; break;
     case UploadType::LoaderRom: kind = Role::Loader; break;
     case UploadType::SystemRom: kind = Role::System; break;
     case UploadType::DiagRom: kind = Role::Diag; break;
-    default: return Status::BadCommand;     // retail tables: later
+    default: return Status::BadCommand;
     }
     if (!SizeOk(kind, b.ImageSize)) {
         return Status::BadSize;
@@ -869,10 +922,12 @@ Status UploadWrite(const uint8_t *in, size_t len)
     if (off >= Up.Size || n > Up.Size - off) {
         return Status::BadOffset;
     }
-    const uint32_t base = BankAddr(Up.Bank);
-    for (uint32_t blk = off / Block; blk <= (off + n - 1) / Block; blk++) {
+    // ROMs are erased in 64 K blocks, the tables in sectors
+    const uint32_t base = Up.Tables ? TablesData() : BankAddr(Up.Bank);
+    const uint32_t unit = Up.Tables ? CatSector : Block;
+    for (uint32_t blk = off / unit; blk <= (off + n - 1) / unit; blk++) {
         if (!(Up.Erased & (1u << blk))) {
-            if (!Nor::Erase(base + blk * Block, Block)) {
+            if (!Nor::Erase(base + blk * unit, unit)) {
                 return Status::FlashError;
             }
             Up.Erased |= 1u << blk;
@@ -919,6 +974,26 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
     }
     OxProg::UploadCommit c;
     Take(in, len, c);
+    if (Up.Tables) {
+        Up.Active = false;
+        uint32_t crc;
+        if (!Nor::Crc32(TablesData(), Up.Size, &crc)) {
+            return Status::FlashError;
+        }
+        if (crc != c.Crc32) {
+            ESP_LOGW(Tag, "retail tables CRC %08lX, expected %08lX", (unsigned long)crc,
+                     (unsigned long)c.Crc32);
+            return Status::CrcMismatch;
+        }
+        const TablesHeader h = {TablesMagic, Up.Size, crc, c.SourceCrc32,
+                                ~TablesMagic ^ Up.Size ^ crc ^ c.SourceCrc32};
+        if (!Nor::Write(TablesAddr(), reinterpret_cast<const uint8_t *>(&h), sizeof(h))) {
+            return Status::FlashError;
+        }
+        ESP_LOGI(Tag, "retail tables stored (%lu bytes, source %08lX)", (unsigned long)Up.Size,
+                 (unsigned long)c.SourceCrc32);
+        return Status::Ok;
+    }
     const bool trial = c.Flags & CommitTrial;
     if (trial && Up.Kind != Role::Loader && Up.Kind != Role::System) {
         return Status::BadCommand;
@@ -1213,8 +1288,16 @@ Status Download(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, siz
             }
             info.Size = Down.Size;
         }
+        else if (b.Type == DownloadType::RetailTables) {
+            TablesHeader h;
+            if (!ReadTables(h)) {
+                return Status::NotFound;
+            }
+            Down = {true, TablesData(), h.Size};
+            info = {h.Size, h.Crc32};
+        }
         else {
-            return Status::NotFound;            // retail tables: later
+            return Status::BadCommand;
         }
         out_len = sizeof(DownloadInfo);
         return Status::Ok;
@@ -1310,6 +1393,11 @@ void FillInfo(Info &info)
         free += !(used >> s & 1);
     }
     info.FreeSlots = free;
+    TablesHeader h;
+    if (ReadTables(h)) {
+        info.RetailTablesSize = h.Size;
+        info.RetailTablesSourceCrc32 = h.SourceCrc32;
+    }
     Banks b;
     if (ReadBanks(b)) {
         info.ActiveEntry = uint8_t(FindBank(b.Active));

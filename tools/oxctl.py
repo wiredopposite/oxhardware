@@ -29,6 +29,7 @@
     py -3 tools/oxctl.py -p COM12 rom list                      # ROM library (docs/03 §5)
     py -3 tools/oxctl.py -p COM12 rom upload FILE [--name N] [--type user|loader|system|diag] [--user] [--boot] [--trial] [--reset] [--compact]
     py -3 tools/oxctl.py -p COM12 rom compact SIZE                # e.g. 1M: move entries to free a run
+    py -3 tools/oxctl.py -p COM12 tables upload FILE [--source CRC] | download OUT   # retail tables
     py -3 tools/oxctl.py -p COM12 update fpga|esp32 FILE   # the chip's own: bitstream (hot reload), firmware (restarts)
     py -3 tools/oxctl.py -p COM12 rom download ID|active OUT
     py -3 tools/oxctl.py -p COM12 rom delete|user ID
@@ -451,7 +452,7 @@ def cmd_prog(link, a):
         print("entries      active {} armed {} user {} loader {} system {} diag {}"
               .format(*map(entry, f[10:16])))
         print(f"catalogue    {f[16]} entries, {f[17]} slots, {f[18]} free")
-        print(f"flash        {f[19]} bytes, retail tables {f[20]} bytes (CRC {f[21]:08X})")
+        print(f"flash        {f[19]} bytes, retail tables {f[20]} bytes (source CRC {f[21]:08X})")
     elif a.what == "smbus-read":
         r = prog(link, MODE_CONTROL, CTL_SMBUS_READ, bytes([a.args[0], a.args[1], 0, 0]))
         print(f"0x{r[2]:02X}")
@@ -466,6 +467,41 @@ def cmd_prog(link, a):
 
 
 CHIP_UPLOAD_TYPES = {"esp32": 5, "fpga": 6}
+
+
+def download(link, begin):
+    size, crc = struct.unpack("<II", prog(link, MODE_DOWNLOAD, DOWN_BEGIN, begin))
+    out = bytearray()
+    while len(out) < size:
+        n = min(4096, size - len(out))
+        out += prog(link, MODE_DOWNLOAD, DOWN_READ, struct.pack("<II", len(out), n))
+    prog(link, MODE_DOWNLOAD, DOWN_END)
+    if zlib.crc32(out) != crc:
+        raise LinkError(f"download CRC {zlib.crc32(out):08X}, expected {crc:08X}")
+    return bytes(out), crc
+
+
+def cmd_tables(link, a):
+    if a.what == "upload":
+        data = open(a.file, "rb").read()
+        prog(link, MODE_UPLOAD, UP_BEGIN, struct.pack("<BBHI33s", 0, 0, 0, len(data), b""))
+        try:
+            for off in range(0, len(data), 4092):
+                prog(link, MODE_UPLOAD, UP_WRITE, struct.pack("<I", off) + data[off:off + 4092])
+            prog(link, MODE_UPLOAD, UP_COMMIT,
+                 struct.pack("<IIHBB", zlib.crc32(data), int(a.source, 0), 0, 0, 0), timeout=30)
+        except LinkError:
+            try:
+                prog(link, MODE_UPLOAD, UP_ABORT)
+            except LinkError:
+                pass
+            raise
+        print(f"retail tables stored: {len(data)} bytes (CRC {zlib.crc32(data):08X}, "
+              f"source {int(a.source, 0):08X})")
+    else:
+        data, crc = download(link, bytes([0, 0]))
+        open(a.file, "wb").write(data)
+        print(f"retail tables: {len(data)} bytes to {a.file} (CRC {crc:08X})")
 
 
 def cmd_update(link, a):
@@ -639,6 +675,10 @@ def main():
     s = sub.add_parser("prog")
     s.add_argument("what", choices=["info", "smbus-read", "smbus-write", "confirm"])
     s.add_argument("args", nargs="*", type=lambda x: int(x, 0))
+    s = sub.add_parser("tables")
+    s.add_argument("what", choices=["upload", "download"])
+    s.add_argument("file")
+    s.add_argument("--source", default="0", help="upload: CRC of the retail BIOS they came from")
     s = sub.add_parser("update")
     s.add_argument("what", choices=["fpga", "esp32"])
     s.add_argument("file")
@@ -696,6 +736,8 @@ def main():
             cmd_rom(link, a)
         elif a.group == "update":
             cmd_update(link, a)
+        elif a.group == "tables":
+            cmd_tables(link, a)
         elif a.group == "prog":
             if a.what.startswith("smbus") and len(a.args) < 2:
                 sys.exit(f"prog {a.what}: ADDR REG required")

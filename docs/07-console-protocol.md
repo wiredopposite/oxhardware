@@ -91,5 +91,6 @@ The console can't erase or program the slot it is running from, or a current Loa
 |---|---|---|
 | `oxprog` | `oxprog/oxprog.hpp`: ports, packets, enums, bank helpers; `Crc32`, `StatusName` | Both ends |
 | `oxprogclient` | `oxprog/client.hpp`: `Transport` (a byte stream the host provides) and `Client` (one call per command, uploads and downloads in chunks) | Hosts |
+| `oxprogc` | `oxprog/oxprog.h`: the client for C, the transport as callbacks; a shared library with `BUILD_SHARED_LIBS` | Hosts in C, bindings from other languages |
 
-A plain CMake project: `add_subdirectory(path/to/libs/oxprog)` and link `oxprogclient`. C++20, no other dependencies. In an ESP-IDF build the same folder is a component providing `oxprog`.
+A plain CMake project: `add_subdirectory(path/to/libs/oxprog)` and link `oxprogclient` (or `oxprogc`). Built on its own, it also builds `oxprog_c_test`, the C API against a fake chip. C++20, no other dependencies. In an ESP-IDF build the same folder is a component providing `oxprog`.

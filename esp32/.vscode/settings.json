@@ -1,0 +1,16 @@
+{
+    // clangd from esp-clang, the only one that knows Xtensa:
+    // python thirdparty/esp-idf/tools/idf_tools.py install esp-clang
+    "clangd.path": "${userHome}/.espressif/tools/esp-clang/esp-18.1.2_20240912/esp-clang/bin/clangd",
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build",
+        "--query-driver=**/xtensa-esp32-elf-*",
+        "--header-insertion=never"
+    ],
+    "C_Cpp.intelliSenseEngine": "disabled",
+
+    "idf.espIdfPath": "${workspaceFolder}/../thirdparty/esp-idf",
+    "idf.espIdfPathWin": "${workspaceFolder}\\..\\thirdparty\\esp-idf",
+    "idf.adapterTargetName": "esp32",
+    "idf.flashType": "UART"
+}

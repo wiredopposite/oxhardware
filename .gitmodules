@@ -1,3 +1,7 @@
 [submodule "esp32/components/blueretro"]
 	path = esp32/components/blueretro
 	url = https://github.com/wiredopposite/libblueretro.git
+[submodule "thirdparty/esp-idf"]
+	path = thirdparty/esp-idf
+	url = https://github.com/espressif/esp-idf.git
+	shallow = true

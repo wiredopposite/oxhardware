@@ -1,0 +1,3 @@
+# GCC-only Xtensa flags clang doesn't take
+CompileFlags:
+  Remove: [-mlongcalls, -fstrict-volatile-bitfields, -fno-tree-switch-conversion, -fno-shrink-wrap, -mdisable-hardware-atomics]

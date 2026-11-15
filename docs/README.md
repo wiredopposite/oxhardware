@@ -10,6 +10,7 @@
 | [05-devboard-wiring.md](05-devboard-wiring.md) | Bench wiring: UPduino v3.1 + ESP32-PICO-DevKitM-2 + Xbox |
 | [06-boot-flow.md](06-boot-flow.md) | ROM roles (Loader, System, Diag, user), one-shot armed boots, boot control port, failed-boot detection, trial updates, forced boots |
 | [07-console-protocol.md](07-console-protocol.md) | Programmer protocol: console port at 0x0B00, packets, commands, the shared `libs/oxprog` library |
+| [08-oxctl.md](08-oxctl.md) | The PC tool: ROMs, the console's power and SMC, the kernel debugger, chip updates, controller, Bluetooth, diagnostics |
 
 Status markers used throughout:
 

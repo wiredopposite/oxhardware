@@ -17,12 +17,9 @@ def rsp(body):
 
 
 def open_com(port, baud):
-    s = serial.Serial(None, baud, timeout=0)
-    s.dtr = False
-    s.rts = False
-    s.port = port
-    s.open()
-    return s
+    # DTR stays asserted: a USB UART bridge like the Debug Probe only forwards what it receives
+    # while the host asserts it. A write that can't drain mustn't hang the probe.
+    return serial.Serial(port, baud, timeout=0, write_timeout=0.5)
 
 
 def probe(com, wait):
@@ -33,7 +30,10 @@ def probe(com, wait):
     rx = b""
     end = time.time() + wait
     while time.time() < end:
-        com.write(b"+" + rsp(b"?"))
+        try:
+            com.write(b"+" + rsp(b"?"))
+        except serial.SerialTimeoutException:
+            pass
         until = time.time() + 0.5
         while time.time() < until:
             rx += com.read(4096)

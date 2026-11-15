@@ -570,8 +570,9 @@ def rom_upload(link, data, kind, name, flags, compact):
             prog(link, MODE_UPLOAD, UP_WRITE, struct.pack("<I", off) + data[off:off + 4092])
             print(f"\rwritten {min(off + 4092, len(data))}/{len(data)}", end="", flush=True)
         print()
+        # Checks the CRC of the whole image in flash and saves the catalogue
         return prog(link, MODE_UPLOAD, UP_COMMIT,
-                    struct.pack("<IIHBB", zlib.crc32(data), 0, 0, flags, 0))
+                    struct.pack("<IIHBB", zlib.crc32(data), 0, 0, flags, 0), timeout=30)
     except LinkError:
         try:
             prog(link, MODE_UPLOAD, UP_ABORT)
@@ -585,28 +586,31 @@ def kd_session(link, com, a):
     """Uploads the BIOS as the power-button ROM, armed for the next boot, in place of the last
     one with its name, reboots the console into it and waits for the kernel's boot break."""
     data = open(a.file, "rb").read()
-    state = link.request(CONSOLE_STATE)[0]
+    off = CONSOLE_STATES.index("off")
+    if link.request(CONSOLE_STATE)[0] != off:
+        # Flash written while the FPGA serves the console from it doesn't verify
+        print("==> Turning the Xbox off", flush=True)
+        link.request(SMC_POWER, bytes([0x80]))
+        end = time.time() + 15
+        while link.request(CONSOLE_STATE)[0] != off:
+            if time.time() > end:
+                sys.exit("The Xbox didn't turn off")
+            time.sleep(0.5)
     for row in rom_list(link):
         if row[1] == ROLES.index("user") and rom_name(row[9]) == a.name:
             prog(link, MODE_ROM, ROM_DELETE, bytes([row[0]]))
     print(f"==> Uploading {a.file} ({len(data)} bytes)", flush=True)
-    rom_upload(link, data, "user", a.name, 0x02 | 0x04, True)
+    entry = ROM_ENTRY.unpack_from(rom_upload(link, data, "user", a.name, 0x02 | 0x04, True))[0]
 
-    print("==> Rebooting the Xbox", flush=True)
-    if state == CONSOLE_STATES.index("off"):
-        link.request(CONSOLE_PRESS, bytes([0]))
-    elif oxkd.probe(com, 1):
-        oxkd.kill(com)
-        time.sleep(3)
-    else:
-        link.request(SMC_POWER, bytes([0x01]))
+    print("==> Turning the Xbox on", flush=True)
+    link.request(CONSOLE_PRESS, bytes([0]))
 
     print("==> Waiting for the kernel debugger", flush=True)
     stop = oxkd.probe(com, a.wait)
     if stop is None:
-        # Hung with interrupts off, or the old kernel had no debugger stopped
-        print("==> No answer, resetting it through the SMC", flush=True)
-        link.request(SMC_POWER, bytes([0x01]))
+        # The arm was used up by the first boot: arm it again with the reset
+        print("==> No answer, booting it again", flush=True)
+        prog(link, MODE_CONTROL, CTL_BOOT, bytes([entry, 1]))
         stop = oxkd.probe(com, a.wait)
     if stop is None:
         sys.exit(f"The kernel debugger never answered on {a.com}: check the BIOS is a KD build, "

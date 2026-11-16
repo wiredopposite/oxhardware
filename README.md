@@ -1,4 +1,4 @@
-# OpenOX LPC peripheral
+# OpenOX LPC peripheral (WIP)
 
 An LPC peripheral for the original Xbox, built from an iCE40UP5K FPGA and an ESP32-PICO-MINI-02. It serves the BIOS from a library of ROMs, gives the console a COM port for the kernel debugger, and adds a USB controller with Bluetooth gamepads.
 

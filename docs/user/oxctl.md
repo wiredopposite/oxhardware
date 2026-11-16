@@ -1,6 +1,6 @@
-# oxctl — the PC tool
+# oxctl
 
-`tools/oxctl.py` talks to the ESP32 over its USB serial port (UART0, bridge channel A, 921600 8N1) using the PC protocol (03-esp32 §12). It's the only way into the device from a PC: ROMs, the console's power and SMC, chip updates, the controller, Bluetooth and the kernel debugger.
+`tools/oxctl.py` talks to the ESP32 over its USB serial port (UART0, 921600 8N1), using the [PC protocol](../dev/esp32.md#pc-protocol). It's the only way into the device from a PC: ROMs, the console's power and SMC, chip updates, the controller, Bluetooth and the kernel debugger.
 
 It needs Python 3 and `pyserial`.
 
@@ -18,7 +18,7 @@ Numbers (addresses, lengths, IDs, registers) take decimal or `0x` hex.
 
 ## ROMs
 
-The ROM library is in the flash behind the FPGA (03-esp32 §5, 06-boot-flow). Entries have an ID, a role (`user`, `loader`, `system`, `diag`), a slot, a size and a name.
+The ROM library is in the flash behind the FPGA, see [ROMs](roms.md). Entries have an ID, a role (`user`, `loader`, `system`, `diag`), a slot, a size and a name.
 
 | Command | |
 |---|---|
@@ -40,7 +40,7 @@ The ROM library is in the flash behind the FPGA (03-esp32 §5, 06-boot-flow). En
 | `--user` | Make it the power-button ROM. |
 | `--boot` | Boot it once, from the console's next reset. |
 | `--reset` | Reset the console once it's uploaded. With `--boot`, that boots it straight away. |
-| `--trial` | A Loader or System: it boots once on trial and only becomes current once it confirms (06-boot-flow). |
+| `--trial` | A Loader or System: it boots once on trial and only becomes current once it confirms ([Boot flow](../dev/boot-flow.md#trial-updates)). |
 | `--compact` | If there's room in total but no free run of the right size, move entries to make one. Without it, such an upload fails with `Fragmented`. |
 
 Turn the console off before uploading (`xbox off`). The flash is shared with the console while it runs, and an upload with the console on fails its CRC check.
@@ -77,7 +77,7 @@ The second boots `test` once and leaves the power-button ROM alone. The console 
 
 ## Kernel debugger
 
-The console's COM1 is the FPGA's COM UART, at a fixed 115200 whatever the guest programs, on its own USB serial port (bridge channel B). These commands take that port with `--com`, which defaults to the `OXKD_COM` environment variable. Only `kd debug` needs `-p`.
+The console's COM1 is the FPGA's COM UART, at a fixed 115200 whatever the guest programs, on its own USB serial port. These commands take that port with `--com`, which defaults to the `OXKD_COM` environment variable. Only `kd debug` needs `-p`.
 
 | Command | |
 |---|---|
@@ -142,13 +142,13 @@ These are for working on the device itself.
 | `link info` | The FPGA's identity over the SPI link. |
 | `link probe` | Checks the link wiring. |
 | `link test [--count N] [--mhz F]` | Stress-tests the scratch register. `--mhz` sets the link clock first, kept until the ESP32 reboots. |
-| `link read ADDR [--len N] [--space S]`, `link write ADDR HEXBYTES [--space S]` | FPGA registers (01-interface). |
+| `link read ADDR [--len N] [--space S]`, `link write ADDR HEXBYTES [--space S]` | FPGA registers, see [Link](../dev/link.md#registers). |
 | `link irq` | FPGA interrupts taken, by bit. |
 | `nor info` | The ROM flash, through the running FPGA. |
 | `nor read OUT --addr A --len N` | |
 | `nor write FILE --addr A` | Erases, programs and verifies. |
 | `nor erase --addr A --len N`, `nor crc --addr A --len N` | |
-| `prog info` | The programmer protocol (07-console-protocol). |
+| `prog info` | The [programmer protocol](../dev/programmer-protocol.md). |
 | `prog smbus-read ADDR REG`, `prog smbus-write ADDR REG VALUE` | SMBus through the programmer. |
 | `prog confirm` | Confirms the trial boot that's running now. |
 

@@ -1,4 +1,4 @@
-# Credits and provenance
+# Credits
 
 ## Provenance
 
@@ -9,7 +9,7 @@ The primary sources for that behaviour are:
 - Intel *Low Pin Count (LPC) Interface Specification*, rev. 1.1.
 - Lattice iCE40 UltraPlus and Winbond W25Q-series datasheets.
 - The Xbox Dev Wiki (xboxdevwiki.net).
-- Measurements on a real console with this project's own probe designs (`lpc_probe`, `lpc_iolog`, `lpc_serve`), recorded in [00-system.md](00-system.md) §4.4 and [02-fpga.md](02-fpga.md) §6.2.
+- Measurements on a real console with this project's own probe designs (`lpc_probe`, `lpc_iolog`, `lpc_serve`), recorded in [Measurements](dev/measurements.md).
 
 Facts such as LPC cycle formats, the 1.6 LFRAME# abort, Xenium-compatible I/O ports and the Super I/O enter-config key are interoperability information. They are implemented here from those sources.
 

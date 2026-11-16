@@ -1,0 +1,83 @@
+{
+    "version": "2.0.0",
+    "options": {
+        "cwd": "${workspaceFolder}"
+    },
+    "windows": {
+        "options": {
+            "env": {
+                "PATH": "${env:OSS_CAD_SUITE}\\bin;${env:OSS_CAD_SUITE}\\lib;${env:PATH}"
+            }
+        }
+    },
+    "linux": {
+        "options": {
+            "env": {
+                "PATH": "${env:OSS_CAD_SUITE}/bin:${env:PATH}"
+            }
+        }
+    },
+    "osx": {
+        "options": {
+            "env": {
+                "PATH": "${env:OSS_CAD_SUITE}/bin:${env:PATH}"
+            }
+        }
+    },
+    "tasks": [
+        {
+            "label": "Build",
+            "type": "shell",
+            "command": "make DESIGN=${input:design}",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build and program",
+            "type": "shell",
+            "command": "make DESIGN=${input:design} prog",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Write BIOS image",
+            "type": "shell",
+            "command": "make rom ROM=\"${input:rom}\"",
+            "problemMatcher": []
+        },
+        {
+            "label": "Simulate",
+            "type": "shell",
+            "command": "make DESIGN=${input:design} sim",
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Simulate USB",
+            "type": "shell",
+            "command": "make sim-usb",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "Clean",
+            "type": "shell",
+            "command": "make clean",
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "design",
+            "type": "pickString",
+            "description": "Design",
+            "options": ["lpc_com", "lpc_serve", "lpc_probe", "lpc_iolog", "hello"],
+            "default": "lpc_com"
+        },
+        {
+            "id": "rom",
+            "type": "promptString",
+            "description": "BIOS image to write to flash at 0x40000"
+        }
+    ]
+}

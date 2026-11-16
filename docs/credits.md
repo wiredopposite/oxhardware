@@ -2,7 +2,7 @@
 
 ## Provenance
 
-The gateware, tools and documentation in this repository are original work. **No source code from the third-party projects listed below is included**, except BlueRetro (below). They were studied as references for how the original Xbox's LPC bus, boot process and modchip registers behave.
+The gateware, tools and documentation in this repository are original work. **No source code from the third-party projects listed below is included**, except BlueRetro (below). They were studied as references for how the original Xbox's LPC bus, boot process and other LPC devices' registers behave.
 
 The primary sources for that behaviour are:
 
@@ -17,7 +17,7 @@ Facts such as LPC cycle formats, the 1.6 LFRAME# abort, Xenium-compatible I/O po
 
 Code from these may be reused; it is the author's own work.
 
-- **ox**: RP2350-based Xbox LPC chip.
+- **ox**: RP2350-based Xbox LPC device.
 - **xprobe**: LPC/Super I/O probe.
 - **pico_usb**: USB device stack with pluggable controller drivers and hub emulation.
 

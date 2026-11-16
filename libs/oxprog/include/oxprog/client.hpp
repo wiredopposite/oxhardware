@@ -50,7 +50,7 @@ public:
     Status CompactRoms(uint32_t ImageSize);
 
     // Begin, the image in chunks, then commit with its CRC. Aborted on the
-    // chip if anything fails part way. For the ROM types Entry (if given)
+    // device if anything fails part way. For the ROM types Entry (if given)
     // gets the new catalogue entry.
     Status Upload(UploadType Type, std::span<const uint8_t> Image,
         const UploadOptions &Options = {}, const Progress &OnProgress = {},
@@ -75,7 +75,7 @@ private:
         uint32_t Timeout = 0);
     bool ReadExact(void *Data, size_t Length, uint32_t Timeout);
     bool ReadReply(Command Cmd, uint32_t Timeout, Status &Result);
-    // Copies the reply into Out, zero-filling what an older chip didn't send
+    // Copies the reply into Out, zero-filling what an older device didn't send
     template <typename T> void TakeReply(T &Out);
 };
 

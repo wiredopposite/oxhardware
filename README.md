@@ -1,6 +1,6 @@
 # OpenOX LPC device
 
-An LPC modchip for the original Xbox, built from an iCE40UP5K FPGA and an ESP32-PICO-MINI-02. It serves the BIOS from a library of ROMs, gives the console a COM port for the kernel debugger, and adds a USB controller with Bluetooth gamepads.
+An LPC device for the original Xbox, built from an iCE40UP5K FPGA and an ESP32-PICO-MINI-02. It serves the BIOS from a library of ROMs, gives the console a COM port for the kernel debugger, and adds a USB controller with Bluetooth gamepads.
 
 The FPGA does everything with hard timing and boots on its own, fast enough to serve the BIOS on a cold boot. The ESP32 does everything else: the ROM library, updates, the PC connection, USB devices and Bluetooth.
 

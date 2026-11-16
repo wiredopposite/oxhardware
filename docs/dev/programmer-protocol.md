@@ -1,6 +1,6 @@
 # Programmer protocol
 
-How a host talks to the chip's ESP32 to manage ROMs, boot them and update the chip. The console reaches it through four LPC I/O ports, and the PC through `oxctl`. The packets are the same on any byte stream. The definitions and a client are in [`libs/oxprog`](#libsoxprog), shared by the ESP32 firmware, OpenOX and any other project.
+How a host talks to the device's ESP32 to manage ROMs, boot them and update the device. The console reaches it through four LPC I/O ports, and the PC through `oxctl`. The packets are the same on any byte stream. The definitions and a client are in [`libs/oxprog`](#libsoxprog), shared by the ESP32 firmware, OpenOX and any other project.
 
 ## Console port
 
@@ -30,7 +30,7 @@ Every command and reply is a 16-byte header followed by `Length` bytes of payloa
 | 8 | 4 | CRC-32 of the payload (0 if none) |
 | 12 | 4 | CRC-32 of bytes 0–11 |
 
-CRC-32 is IEEE (zlib). The chip answers every command with exactly one reply carrying the same command byte. A host skips bytes until it sees the magic, and after a bad reply resets the port before the next command. Replies may be longer or shorter than the host's structure: a newer chip adds fields at the end, an older one sends fewer, and the missing ones read as 0.
+CRC-32 is IEEE (zlib). The device answers every command with exactly one reply carrying the same command byte. A host skips bytes until it sees the magic, and after a bad reply resets the port before the next command. Replies may be longer or shorter than the host's structure: a newer device adds fields at the end, an older one sends fewer, and the missing ones read as 0.
 
 ## Commands
 
@@ -56,7 +56,7 @@ CRC-32 is IEEE (zlib). The chip answers every command with exactly one reply car
 | | 4 SetUser | `RomRef` | The power-button ROM, `0xFF` for none |
 | | 5 Compact | `RomCompact` → `RomCompactStep` | Moves one entry towards a free run of `ImageSize`; repeat until `Moved` is `0xFF` |
 
-Upload types: retail tables, user ROM, Loader, System, Diag, ESP32 firmware, FPGA bitstream. The last two update the chip itself with the console running ([ESP32](esp32.md#chip-updates)): the bitstream's Commit writes and reloads the FPGA (a few seconds), the firmware's Commit replies and then restarts the ESP32; neither replies with an entry. Download types: retail tables, a catalogue entry, the ROM being served.
+Upload types: retail tables, user ROM, Loader, System, Diag, ESP32 firmware, FPGA bitstream. The last two update the device itself with the console running ([ESP32](esp32.md#updates)): the bitstream's Commit writes and reloads the FPGA (a few seconds), the firmware's Commit replies and then restarts the ESP32; neither replies with an entry. Download types: retail tables, a catalogue entry, the ROM being served.
 
 Commit flags: `Trial` (Loader, System: boot once on trial, current only after confirming); `User` (make a user ROM the power-button ROM); `Boot` (boot it from the console's next reset). An upload from the console of a Loader or System is always on trial.
 

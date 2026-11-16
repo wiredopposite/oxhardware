@@ -1,5 +1,5 @@
 /*
- * The C API against a fake chip: a transport that answers each packet the way
+ * The C API against a fake device: a transport that answers each packet the way
  * the ESP32 would (info, an SMBus failure, an upload, a download). Plain C, so
  * it also checks oxprog.h compiles as C.
  */

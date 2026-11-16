@@ -8,7 +8,7 @@
 
 ## Developing it
 
-- [Architecture](dev/architecture.md): what each chip does and why
+- [Architecture](dev/architecture.md): what the FPGA and the ESP32 each do and why
 - [Building](dev/building.md): the gateware, the firmware and `libs/oxprog`
 - [FPGA](dev/fpga.md): the designs and the gateware's blocks
 - [ESP32](dev/esp32.md): the firmware's components

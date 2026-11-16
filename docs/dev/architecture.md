@@ -1,8 +1,8 @@
 # Architecture
 
-## Two chips
+## FPGA and ESP32
 
-| Chip | Does |
+| Part | Does |
 |---|---|
 | iCE40UP5K FPGA | Everything with hard timing: the LPC target (BIOS reads, the COM port and Super I/O, the boot control port, the programmer's mailbox), the USB full-speed device, reading ROMs from its flash |
 | ESP32-PICO-MINI-02 | Everything with policy, protocols or radios: the ROM library, deciding and checking boots, updates, the PC connection, the USB device stack, Bluetooth gamepads, the console's SMBus and buttons |

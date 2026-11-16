@@ -24,7 +24,7 @@ Each design is a `top_<name>.v` in `boards/upduino31/`.
 | `lpc_com` | The device: BIOS serving, the COM port and Super I/O, the boot control port, the mailbox, flash lending, USB and the ESP32 link |
 | `lpc_serve` | BIOS serving on its own, with a logic analyser capture of the bus. Used to bring up serving on the 1.6 |
 | `lpc_probe` | Passive: times a cold boot and reports it over the UART ([Measurements](measurements.md#cold-boot-timing)) |
-| `lpc_iolog` | Passive: logs every LPC cycle except memory reads, and power and `LRESET#` events, with timestamps ([Measurements](measurements.md#a-xenium-compatible-chip)) |
+| `lpc_iolog` | Passive: logs every LPC cycle except memory reads, and power and `LRESET#` events, with timestamps ([Measurements](measurements.md#a-xenium-on-the-same-bus)) |
 | `hello` | The toolchain check: the PLL, the LED, and a UART banner and echo |
 
 The rest of this page is about `lpc_com`.
@@ -75,9 +75,9 @@ On a 1.6 the onboard flash, behind the Xyclops, answers every memory read too. A
 
 ### Super I/O
 
-`superio_cfg` is an SMSC-style configuration space, enough for a kernel to find the serial port and place it. `0x55` to `0x2E` enters configuration mode and `0xAA` leaves it. Register `0x07` selects the logical device. Devices 4 and 5 are serial ports: active when bit 0 of `0x30` is set, at the base in `0x60` and `0x61`. Registers `0x26` and `0x27` report the chip's own configuration port, `0x2E`. The data port only answers in configuration mode.
+`superio_cfg` is an SMSC-style configuration space, enough for a kernel to find the serial port and place it. `0x55` to `0x2E` enters configuration mode and `0xAA` leaves it. Register `0x07` selects the logical device. Devices 4 and 5 are serial ports: active when bit 0 of `0x30` is set, at the base in `0x60` and `0x61`. Registers `0x26` and `0x27` report the Super I/O's own configuration port, `0x2E`. The data port only answers in configuration mode.
 
-The devkit kernel probes for this at boot and turns on serial debug output and its debugger stub only if it answers (see [Measurements](measurements.md#a-xenium-compatible-chip)).
+The devkit kernel probes for this at boot and turns on serial debug output and its debugger stub only if it answers (see [Measurements](measurements.md#a-xenium-on-the-same-bus)).
 
 ## Banks and the boot control port
 

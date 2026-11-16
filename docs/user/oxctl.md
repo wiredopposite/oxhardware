@@ -1,6 +1,6 @@
 # oxctl
 
-`tools/oxctl.py` talks to the ESP32 over its USB serial port (UART0, 921600 8N1), using the [PC protocol](../dev/esp32.md#pc-protocol). It's the only way into the device from a PC: ROMs, the console's power and SMC, chip updates, the controller, Bluetooth and the kernel debugger.
+`tools/oxctl.py` talks to the ESP32 over its USB serial port (UART0, 921600 8N1), using the [PC protocol](../dev/esp32.md#pc-protocol). It's the only way into the device from a PC: ROMs, the console's power and SMC, updates, the controller, Bluetooth and the kernel debugger.
 
 It needs Python 3 and `pyserial`.
 
@@ -96,7 +96,7 @@ The console's COM1 is the FPGA's COM UART, at a fixed 115200 whatever the guest 
 
 The bridge takes one debugger at a time and drops what the kernel sends while none is connected. It keeps running until Ctrl+C. The OpenOX side of the loop, VS Code included, is in OpenOX's `docs/dev/debugging.md`.
 
-## Chip updates
+## Updates
 
 | Command | |
 |---|---|

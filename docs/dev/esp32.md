@@ -26,7 +26,7 @@ The ESP32 isn't on the cold-boot path. The FPGA serves the BIOS on its own (see 
 | `bt_xid` | BlueRetro's output for the Xbox gamepad |
 | `board` | The pin map |
 
-`main` starts them in order: the PC link, the config bus, the FPGA link and its interrupts, console power, the flash, chip updates (which write the last good bitstream back if the FPGA doesn't configure), SMBus, the ROM library, the mailbox, Bluetooth, then USB.
+`main` starts them in order: the PC link, the config bus, the FPGA link and its interrupts, console power, the flash, updates (which write the last good bitstream back if the FPGA doesn't configure), SMBus, the ROM library, the mailbox, Bluetooth, then USB.
 
 ## Flash layout
 
@@ -42,7 +42,7 @@ The ESP32's own flash. The layout fits 4MB, so it works on a 4MB module and on t
 | `golden` | data/0x40 | `0x320000` | 256KB | Two 128KB bitstream slots: the last good one, and the one being uploaded |
 | `storage` | data/spiffs | `0x360000` | 640KB | BlueRetro's settings and pairing keys |
 
-## Chip updates
+## Updates
 
 The bitstream and the firmware are uploaded through the programmer protocol like ROMs (upload types `FpgaBitstream` and `Esp32Firmware`), from the console or with `oxctl update`. The console keeps running.
 

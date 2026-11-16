@@ -21,14 +21,14 @@ What works today is on the bench: a UPduino v3.1 and an ESP32-PICO-DevKitM-2 on 
 - [ ] **COM options:** a programmable baud (`UART_DIV`), RTS/CTS, and routing COM to the ESP32 instead of the UART pins.
 - [ ] **Status registers:** SYNC timeout count and setting, `ERR_STATUS`, `SOFT_RESET`, a register-controlled LED.
 
-## Legacy modchips
+## Compatibility with other LPC devices
 
 So that existing Xbox software that drives a Xenium, SmartXX, Xecuter 3 or Aladdin works with this device.
 
 - [ ] **I/O trap** in the FPGA: eight programmable I/O port windows. Writes are captured in order into a deep FIFO (SPRAM, 8K entries) for the ESP32, with a coarse timestamp. Reads come from shadow registers the ESP32 keeps, or are deferred to the ESP32. Writes that happen before the ESP32 is up wait in the FIFO.
-- [ ] **Bank-select fast path:** a written value maps through a table straight to the active or pending bank, before the ESP32 is up. XeniumOS switches banks at runtime, so it has to apply at once as well as at reset (see [Measurements](measurements.md#a-xenium-compatible-chip)).
+- [ ] **Bank-select fast path:** a written value maps through a table straight to the active or pending bank, before the ESP32 is up. XeniumOS switches banks at runtime, so it has to apply at once as well as at reset (see [Measurements](measurements.md#a-xenium-on-the-same-bus)).
 - [ ] **JEDEC flash emulation:** answers AMD/SST-style command sequences on memory writes to the BIOS window (autoselect ID, byte program, sector and chip erase, DQ7 and DQ6 status polling), so existing flashers can write a ROM into the active bank. Chip erase only touches the active bank, and protected slots are refused.
-- [ ] **Personalities** on the ESP32: a table of trap windows and a decoder per chip, turning trapped traffic (HD44780 commands, bit-banged SPI, LED registers) into LCD text, LED colours and bank selects. Xenium first.
+- [ ] **Personalities** on the ESP32: a table of trap windows and a decoder per device, turning trapped traffic (HD44780 commands, bit-banged SPI, LED registers) into LCD text, LED colours and bank selects. Xenium first.
 
 The I/O trap and flash emulation would take about 650 LUTs together, which don't fit beside the USB device on the UP5K (`lpc_com` already uses 84%).
 

@@ -3,7 +3,7 @@
  * same calls as OxProg::Client, over a transport given as callbacks. Link
  * oxprogc.
  *
- * Every call returns an oxprog_status_t: OXPROG_OK, a status from the chip,
+ * Every call returns an oxprog_status_t: OXPROG_OK, a status from the device,
  * or OXPROG_TIMEOUT / OXPROG_TRANSPORT_ERROR from the client. Commands are sent
  * one at a time; a client is used from one thread.
  */
@@ -67,7 +67,7 @@ enum {
     OXPROG_UPLOAD_LOADER_ROM,
     OXPROG_UPLOAD_SYSTEM_ROM,
     OXPROG_UPLOAD_DIAG_ROM,
-    OXPROG_UPLOAD_ESP32_FIRMWARE,   /* the chip restarts after the commit */
+    OXPROG_UPLOAD_ESP32_FIRMWARE,   /* the device restarts after the commit */
     OXPROG_UPLOAD_FPGA_BITSTREAM    /* the FPGA reloads during the commit */
 };
 
@@ -141,7 +141,7 @@ typedef struct {
 } oxprog_upload_options_t;
 
 /*
- * A byte stream to the chip. write: everything or nothing, returns nonzero on
+ * A byte stream to the device. write: everything or nothing, returns nonzero on
  * success. read: whatever arrives within timeout_ms, up to len; 0 on timeout.
  * discard (may be NULL): drop anything received but not read.
  */
@@ -184,7 +184,7 @@ OXPROG_API oxprog_status_t oxprog_set_user_rom(oxprog_client_t *client, uint8_t 
 OXPROG_API oxprog_status_t oxprog_compact_roms(oxprog_client_t *client, uint32_t image_size);
 
 /*
- * Begin, the image in chunks, then commit with its CRC; aborted on the chip if
+ * Begin, the image in chunks, then commit with its CRC; aborted on the device if
  * anything fails part way. options, progress and entry may be NULL. For the ROM
  * types, entry gets the new catalogue entry.
  */
@@ -196,7 +196,7 @@ OXPROG_API oxprog_status_t oxprog_upload(oxprog_client_t *client, uint8_t type,
 OXPROG_API oxprog_status_t oxprog_abort_upload(oxprog_client_t *client);
 
 /*
- * The whole image, checked against the chip's CRC, into a buffer the library
+ * The whole image, checked against the device's CRC, into a buffer the library
  * allocates: free it with oxprog_free(). entry is for OXPROG_DOWNLOAD_ROM.
  */
 OXPROG_API oxprog_status_t oxprog_download(oxprog_client_t *client, uint8_t type, uint8_t entry,

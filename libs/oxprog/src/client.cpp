@@ -17,7 +17,7 @@ bool Client::ReadExact(void *Data, size_t Length, uint32_t Timeout)
     return true;
 }
 
-// Skips anything before the magic, the chip only ever sends replies
+// Skips anything before the magic, the device only ever sends replies
 bool Client::ReadReply(Command Cmd, uint32_t Timeout, Status &Result)
 {
     Header header{};
@@ -90,7 +90,7 @@ Status Client::Transact(Mode Mode, uint8_t Action, const void *Payload, uint16_t
     return result;
 }
 
-// An older chip sends less, a newer one more
+// An older device sends less, a newer one more
 template <typename T> void Client::TakeReply(T &Out)
 {
     std::memset(&Out, 0, sizeof(Out));

@@ -1,5 +1,5 @@
 // lpc_iolog: passive logger of every LPC cycle except memory reads, for watching another
-// chip's register use on an LPC splitter. Read with tools/lpc_probe_view.py --iolog.
+// device's register use on an LPC splitter. Read with tools/lpc_probe_view.py --iolog.
 `default_nettype none
 
 module top_lpc_iolog (

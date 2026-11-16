@@ -34,9 +34,9 @@ Used to judge armed boots (see [Boot flow](boot-flow.md#failed-boots)). A 1.6 wi
 | `LRESET#` | Stays high | The SMC retries: bursts of 4 resets about 0.37s apart, three bursts, then FRAG with no more resets |
 | SMC over SMBus during the FRAG | | Still answers reads |
 
-## A Xenium-compatible chip
+## A Xenium on the same bus
 
-`lpc_iolog` on a 1.6, with a Xenium-compatible chip running XeniumOS on an LPC splitter: power on, the XeniumOS menu for about 2 minutes, then a BIOS booted from bank 3. Memory reads aren't logged, so which device served which read isn't visible.
+`lpc_iolog` on a 1.6, with a Xenium-compatible device running XeniumOS on an LPC splitter: power on, the XeniumOS menu for about 2 minutes, then a BIOS booted from bank 3. Memory reads aren't logged, so which device served which read isn't visible.
 
 | Port | Seen | Meaning (inferred) |
 |---|---|---|
@@ -44,7 +44,7 @@ Used to judge armed boots (see [Boot flow](boot-flow.md#failed-boots)). A 1.6 wi
 | `0xEF` write, bits 3:0 | Values `1`, `2`, `3` and `A`. `2` at 620ms, then `A` and `1` alternate while the menu runs. `3` is the bank booted | Bank select. XeniumOS switches banks at runtime, presumably to read its BIOS list and settings, so a bank write has to apply at once, not only at reset |
 | `0xEF` write, bits 6:4 | Idle at `111` (`0x70`). Bursts of 131, 520 and 286 writes in which bit 6 toggles every write pair and bit 4 carries data. No reads of `0xEF` during bursts | Write-only bit-banged serial: bit 6 clock, bit 4 data, bit 5 select (low during bursts). Consistent with an SPI LCD. About 3 I/O writes, 46µs, per bit |
 | `0xEF` write, bit 7 | Set once: `73` then `F3`, and `LRESET#` asserts 1.06ms later | Boots the selected bank. The reset follows |
-| `0xEF` read | Once, at 2.05s, returning `BA` | Chip detect or status |
+| `0xEF` read | Once, at 2.05s, returning `BA` | Device detect or status |
 | `0x3F8` to `0x3FD` | XeniumOS (RTTarget-32) programs COM1 (divisor 1, 115200 8N1, MCR `03`) and prints its banner. Its LSR reads get no response | Real software uses COM1 at boot |
 | `0x2E`, `0x2F` | After the booted devkit BIOS starts: write `55`, `26`, read `2F`, no response, and no COM traffic follows | The kernel's Super I/O probe: SMSC enter-config key `55`, then index `0x26`. With nothing answering, it skips serial debug output and its debugger stub |
 | `LRESET#` | After `F3`: asserted 1.06ms, released 1.1ms later, asserted again 21ms later, released 21ms after that | A bank-switch reboot has two reset pulses. The bank written before them has to survive both |

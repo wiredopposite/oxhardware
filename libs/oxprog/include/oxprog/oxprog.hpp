@@ -49,7 +49,7 @@ enum class Status : uint8_t {
     SmbusError,
     Fragmented,
 
-    // Reported by the client, never sent by the chip
+    // Reported by the client, never sent by the device
     Timeout = 0xFE,
     TransportError = 0xFF
 };

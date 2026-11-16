@@ -1,6 +1,6 @@
 # Boot flow
 
-How the chip decides what the Xbox boots: the ROM roles, the Loader's decision, one-shot armed boots, failed-boot detection, trial updates and forced boots. The registers are in [Link](link.md#lpc-and-banks).
+How the device decides what the Xbox boots: the ROM roles, the Loader's decision, one-shot armed boots, failed-boot detection, trial updates and forced boots. The registers are in [Link](link.md#lpc-and-banks).
 
 ## ROM roles
 

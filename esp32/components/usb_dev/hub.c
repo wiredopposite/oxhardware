@@ -100,21 +100,20 @@ static const usb_desc_string_t DescStr2 = USB_STRING_DESC("OpenOX USB hub");
 static const usb_desc_string_t *DescStr[] = {&DescStr0, &DescStr1, &DescStr2};
 
 typedef struct {
-    usbd_handle_t *dev;     // NULL: nothing attached
+    usbd_handle_t *dev;
     bool powered;
-    int64_t connect_at;     // the attached device shows up then (0: not pending)
+    int64_t connect_at;
     uint32_t status;        // wPortStatus | wPortChange << 16
 } port_t;
 
 static uint8_t Ports;
-static port_t Port[HUB_PORTS_MAX + 1];      // [0] unused, ports count from 1
+static port_t Port[HUB_PORTS_MAX + 1];
 
 static void set_change(uint8_t p, uint8_t c_feature)
 {
     Port[p].status |= BIT(c_feature);
 }
 
-// Bit n: port n has wPortChange bits set
 static uint8_t changes(void)
 {
     uint8_t bitmap = 0;

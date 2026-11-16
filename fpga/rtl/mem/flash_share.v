@@ -1,18 +1,11 @@
-// Hands the BIOS flash to the ESP32 (docs/01-interface.md §5.5). The ESP32 sets REQ; once
-// the console has gone QUIET_CLKS without a BIOS read (or LRESET# is asserted) the
-// streamer is held in reset, which deselects the flash, and GRANT rises: the top floats
-// its flash pins and the ESP32 drives them over the config bus. Clearing REQ gives the
-// pins back at once (the streamer is still deselected) and the streamer starts over,
-// waking the flash first.
-//
-// While the flash is away, BIOS reads are answered with 0xFF here and counted.
-//
-// Registers (system clock): 0xC0 FLASH_CTRL (bit0 REQ rw, bit1 GRANT ro),
-// 0xC1 FLASH_MISS (BIOS reads answered 0xFF, saturating; a write clears it).
+// Lends the BIOS flash to the ESP32. Once REQ is set and the console has gone QUIET_CLKS
+// without a BIOS read, or is in reset, the streamer is held in reset and GRANT rises; the
+// top then floats the flash pins. Clearing REQ hands them back at once. BIOS reads in the
+// meantime get 0xFF and are counted in FLASH_MISS.
 `default_nettype none
 
 module flash_share #(
-    parameter integer QUIET_CLKS = 24000        // 1 ms at 24 MHz
+    parameter integer QUIET_CLKS = 24000
 ) (
     input  wire        clk,
     input  wire        wr,
@@ -20,12 +13,11 @@ module flash_share #(
     input  wire [7:0]  wdata,
     output reg  [7:0]  rdata = 8'd0,
     output reg         hit = 1'b0,
-    input  wire        served_pulse,            // a BIOS read was served
-    input  wire        lreset_n,                // synchronised
+    input  wire        served_pulse,
+    input  wire        lreset_n,
     output reg         grant = 1'b0,
-    // LCLK domain: between lpc_target and spi_stream
     input  wire        lclk,
-    output reg         hold_l = 1'b0,           // keep spi_stream in reset
+    output reg         hold_l = 1'b0,
     input  wire        req,
     output wire        ack,
     output wire [7:0]  ack_data,
@@ -33,7 +25,6 @@ module flash_share #(
     input  wire        s_ack,
     input  wire [7:0]  s_data
 );
-    // ---------------------------------------------------------------- system clock
     reg        want = 1'b0, park = 1'b0;
     reg [14:0] quiet = 15'd0;
     reg [1:0]  back_s = 2'b00, miss_s = 2'b00;
@@ -56,7 +47,6 @@ module flash_share #(
             grant <= 1'b0;
         end else begin
             if (quiet_ok || !lreset_n) park <= 1'b1;
-            // the streamer is in reset (or there is no LPC clock to run it)
             if (park && (back_s[1] || !lreset_n)) grant <= 1'b1;
         end
 
@@ -73,7 +63,6 @@ module flash_share #(
         endcase
     end
 
-    // ---------------------------------------------------------------- LCLK
     reg [1:0] park_s = 2'b00;
     reg       ff_ack = 1'b0;
     always @(posedge lclk) begin
@@ -82,8 +71,6 @@ module flash_share #(
         ff_ack <= hold_l && req && !ff_ack;
         if (hold_l && req && !ff_ack) miss_tog <= ~miss_tog;
     end
-    // A streamer ack in flight as the hold starts is dropped (the request gets 0xFF), and
-    // an 0xFF ack as it ends is dropped (the streamer serves the request)
     assign s_req    = req && !hold_l;
     assign ack      = hold_l ? ff_ack : s_ack;
     assign ack_data = hold_l ? 8'hFF : s_data;

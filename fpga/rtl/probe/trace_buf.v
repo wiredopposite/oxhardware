@@ -1,6 +1,3 @@
-// In-FPGA logic analyser: records a 16-bit sample every clock of 'sclk' into a 512-entry
-// circular buffer (2 EBR). On 'trigger' (first one after arm) it records POST more samples
-// and freezes. The buffer is read from another clock domain ('rclk') once frozen.
 `default_nettype none
 
 module trace_buf #(
@@ -10,8 +7,7 @@ module trace_buf #(
     input  wire [15:0] sample,
     input  wire        trigger,
     output reg         frozen = 1'b0,
-    output reg  [8:0]  wp = 0,             // next write slot = oldest sample once frozen
-    // read port
+    output reg  [8:0]  wp = 0,
     input  wire        rclk,
     input  wire [8:0]  raddr,
     output reg  [15:0] rdata

@@ -18,17 +18,17 @@
 
 #define DTYPE_XID       0x42U
 #define REQ_GET_CAPS    0x01U
-#define REPORT_IN       0x01U   // wValue high byte: input / output report
+#define REPORT_IN       0x01U
 #define REPORT_OUT      0x02U
 
 typedef struct __attribute__((packed)) {
-    uint8_t  id;                // 0
+    uint8_t  id;
     uint8_t  len;
     xid_in_t in;
 } report_in_t;
 
 typedef struct __attribute__((packed)) {
-    uint8_t   id;               // 0
+    uint8_t   id;
     uint8_t   len;
     xid_out_t out;
 } report_out_t;
@@ -123,9 +123,9 @@ static const desc_xid_t DescXid = {
 };
 
 static portMUX_TYPE Mux = portMUX_INITIALIZER_UNLOCKED;
-static xid_in_t State;          // under Mux
-static bool Changed;            // under Mux
-static xid_out_t Rumble;        // under Mux
+static xid_in_t State;
+static bool Changed;
+static xid_out_t Rumble;
 static uint32_t Reports;
 static uint32_t Rumbles;
 static volatile xid_pad_rumble_cb_t RumbleCb;

@@ -3,7 +3,6 @@
 #include "oxprog/client.hpp"
 
 namespace OxProg {
-
 bool Client::ReadExact(void *Data, size_t Length, uint32_t Timeout)
 {
     auto *out = static_cast<uint8_t *>(Data);
@@ -200,7 +199,6 @@ Status Client::CompactRoms(uint32_t ImageSize)
 {
     RomCompact compact{ ImageSize };
     for (;;) {
-        // Each step copies up to 512 K
         const auto status = Transact(Mode::Rom, uint8_t(RomAction::Compact), &compact,
                                      sizeof(compact), CommitTimeoutMs);
         if (status != Status::Ok) {

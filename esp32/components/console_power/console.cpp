@@ -11,9 +11,7 @@
 #include "host_link.hpp"
 
 namespace Console {
-
 namespace {
-
 const char *Tag = "console";
 
 using FpgaLink::Space;
@@ -22,9 +20,8 @@ constexpr uint16_t RegLpcStatus = 0x0021;   // bit0 LRESET#, bit1 LCLK running
 constexpr uint8_t StLreset = 0x01;
 constexpr uint8_t StLclk = 0x02;
 
-// Commands (oxctl xbox)
-constexpr uint16_t CmdState = 0x0410;       // -> u8 state
-constexpr uint16_t CmdPress = 0x0411;       // u8 button
+constexpr uint16_t CmdState = 0x0410;
+constexpr uint16_t CmdPress = 0x0411;
 
 constexpr uint32_t PressMs = 200;
 constexpr int64_t WakeHoldoffUs = 15 * 1000 * 1000;
@@ -55,7 +52,7 @@ void Watch(void *)
 {
     FpgaSvc::Notify(FpgaSvc::Irq::ConsolePower | FpgaSvc::Irq::LrstAssert |
                     FpgaSvc::Irq::LrstDeassert, xTaskGetCurrentTaskHandle());
-    bool ran = false;               // on since the last shutdown
+    bool ran = false;
     TickType_t off_at = 0;
     for (;;) {
         const State s = Read();

@@ -25,13 +25,11 @@ static uint32_t get32(const uint8_t *p)
     return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-/* ------------------------------------------------------------ fake chip */
 typedef struct {
     uint8_t in[16 + PAYLOAD_MAX];
     size_t in_len;
     uint8_t out[16 + PAYLOAD_MAX];
     size_t out_len, out_pos;
-    /* upload state */
     uint8_t image[64 * 1024];
     uint32_t image_size;
     uint8_t upload_type;
@@ -58,7 +56,7 @@ static void reply(chip_t *c, uint8_t cmd, uint8_t status, const void *payload, u
 static void handle(chip_t *c, uint8_t cmd, const uint8_t *p, uint16_t len)
 {
     const uint8_t mode = cmd & 0x0F, action = cmd >> 4;
-    if (mode == 1 && action == 0) {                     /* GetInfo */
+    if (mode == 1 && action == 0) {
         oxprog_info_t info;
         memset(&info, 0, sizeof(info));
         info.version = 3;
@@ -66,28 +64,28 @@ static void handle(chip_t *c, uint8_t cmd, const uint8_t *p, uint16_t len)
         info.active_entry = OXPROG_NO_ENTRY;
         info.flash_size = 4u << 20;
         reply(c, cmd, OXPROG_OK, &info, sizeof(info));
-    } else if (mode == 1 && action == 2) {              /* SmbusRead: nothing acks */
+    } else if (mode == 1 && action == 2) {
         reply(c, cmd, OXPROG_SMBUS_ERROR, NULL, 0);
-    } else if (mode == 2 && action == 0) {              /* UploadBegin */
+    } else if (mode == 2 && action == 0) {
         c->upload_type = p[0];
         c->image_size = get32(p + 4);
         reply(c, cmd, c->image_size <= sizeof(c->image) ? OXPROG_OK : OXPROG_BAD_SIZE, NULL, 0);
-    } else if (mode == 2 && action == 1) {              /* UploadWrite */
+    } else if (mode == 2 && action == 1) {
         const uint32_t off = get32(p);
         memcpy(c->image + off, p + 4, len - 4u);
         reply(c, cmd, OXPROG_OK, NULL, 0);
-    } else if (mode == 2 && action == 2) {              /* UploadCommit */
+    } else if (mode == 2 && action == 2) {
         const int ok = get32(p) == oxprog_crc32(c->image, c->image_size, 0);
         reply(c, cmd, ok ? OXPROG_OK : OXPROG_CRC_MISMATCH, NULL, 0);
-    } else if (mode == 3 && action == 0) {              /* DownloadBegin */
+    } else if (mode == 3 && action == 0) {
         uint8_t r[8];
         put32(r, sizeof(download_data));
         put32(r + 4, oxprog_crc32(download_data, sizeof(download_data), 0));
         reply(c, cmd, OXPROG_OK, r, sizeof(r));
-    } else if (mode == 3 && action == 1) {              /* DownloadRead */
+    } else if (mode == 3 && action == 1) {
         const uint32_t off = get32(p), n = get32(p + 4);
         reply(c, cmd, OXPROG_OK, download_data + off, (uint16_t)n);
-    } else if (mode == 3 && action == 2) {              /* DownloadEnd */
+    } else if (mode == 3 && action == 2) {
         reply(c, cmd, OXPROG_OK, NULL, 0);
     } else {
         reply(c, cmd, OXPROG_BAD_COMMAND, NULL, 0);

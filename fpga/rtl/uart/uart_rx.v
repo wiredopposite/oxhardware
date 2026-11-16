@@ -1,11 +1,9 @@
-// 8N1 UART receiver with 2-FF input synchroniser.
-// Pulses valid for one clk with the received byte; frames with a bad stop bit are dropped.
-// The bit timer counts up from zero (so its carry chain packs cleanly) and flags sample
-// points one cycle early (cnt_done) to keep the compare off the critical path at 48 MHz.
+// 8N1 UART receiver. Frames with a bad stop bit are dropped. The bit timer flags sample
+// points a clock early to keep the compare off the critical path.
 `default_nettype none
 
 module uart_rx #(
-    parameter integer CLKS_PER_BIT = 417   // 48 MHz / 115200
+    parameter integer CLKS_PER_BIT = 417
 ) (
     input  wire       clk,
     input  wire       rst,
@@ -35,7 +33,7 @@ module uart_rx #(
             state <= S_IDLE;
         end else if (state == S_IDLE) begin
             if (!rx_s) begin
-                cnt      <= 0;                      // first sample: mid start bit
+                cnt      <= 0;
                 cnt_done <= 1'b0;
                 state    <= S_START;
             end
@@ -51,13 +49,13 @@ module uart_rx #(
                     bitcnt <= 3'd0;
                     state  <= S_DATA;
                 end else
-                    state <= S_IDLE;                 // glitch
+                    state <= S_IDLE;
             S_DATA: begin
                 shreg  <= {rx_s, shreg[7:1]};
                 bitcnt <= bitcnt + 1'b1;
                 if (bitcnt == 3'd7) state <= S_STOP;
             end
-            default: begin                           // S_STOP
+            default: begin
                 if (rx_s) begin
                     data  <= shreg;
                     valid <= 1'b1;

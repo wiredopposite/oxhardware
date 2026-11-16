@@ -2,9 +2,7 @@
 #include "oxprog/oxprog.hpp"
 
 namespace OxProg {
-
 namespace {
-
 constexpr std::array<uint32_t, 256> MakeCrcTable()
 {
     std::array<uint32_t, 256> table{};

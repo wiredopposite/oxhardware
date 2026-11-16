@@ -9,14 +9,11 @@
 #include "freertos/task.h"
 
 namespace Nor {
-
 namespace {
-
 const char *Tag = "nor";
 
 using FpgaLink::Space;
 
-// docs/01-interface.md §5.5
 constexpr uint16_t RegFeatures = 0x0008;
 constexpr uint16_t RegFlashCtrl = 0x00C0;     // bit0 REQ, bit1 GRANT
 constexpr uint16_t RegFlashMiss = 0x00C1;
@@ -31,7 +28,7 @@ constexpr int64_t GrantTimeoutUs = 3 * 1000 * 1000;
 constexpr uint32_t Sector = 4 * 1024;
 
 SemaphoreHandle_t Lock;
-uint32_t ProtectEnd;        // the bitstream area: erase and program refused below it
+uint32_t ProtectEnd;
 
 class Guard {
 public:
@@ -52,8 +49,6 @@ void Ask(bool want)
     FpgaLink::Write(Space::Regs, RegFlashCtrl, &v, 1);
 }
 
-// The flash for one operation: held (FPGA in reset) as it is, or borrowed from the
-// running FPGA for the scope's lifetime
 class Access {
 public:
     Access()
@@ -109,7 +104,7 @@ private:
     bool borrowed_ = false;
 };
 
-// The bitstream area ends at the catalogue (§6.1): parts up to 4 MB use the small layout
+// The bitstream area ends at the catalogue: parts up to 4MB use the small layout
 bool Protected(const Access &a, uint32_t addr)
 {
     if (a.Held()) {
@@ -156,7 +151,6 @@ bool Read(uint32_t addr, uint8_t *buf, size_t len)
 }
 
 namespace {
-
 bool DoErase(uint32_t addr, uint32_t len, bool bitstream)
 {
     if ((addr | len) & (Sector - 1)) {

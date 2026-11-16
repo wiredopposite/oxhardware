@@ -15,25 +15,22 @@
 #include "nor.hpp"
 
 namespace ChipUpdate {
-
 namespace {
-
 using namespace OxProg;
 
 const char *Tag = "update";
 
-constexpr int64_t IdleExpireUs = 30 * 1000 * 1000;     // an abandoned upload frees itself
+constexpr int64_t IdleExpireUs = 30 * 1000 * 1000;
 constexpr uint32_t Sector = 4096;
 
-// ------------------------------------------------------------ bitstream copies
-// The `golden` partition (docs/03-esp32.md §4) holds two slots: the last good bitstream
+// The `golden` partition holds two slots: the last good bitstream
 // and the one being uploaded. Each is a 4 KB header sector, then the image; the header
 // is written last, so a valid header means a complete, checked image.
 constexpr uint8_t GoldenSubtype = 0x40;
 constexpr uint32_t SlotSize = 0x20000;
 constexpr uint32_t HeaderSize = Sector;
 constexpr uint32_t ImageMax = SlotSize - HeaderSize;
-constexpr uint32_t Magic = 0x5342584F;      // "OXBS"
+constexpr uint32_t Magic = 0x5342584F;
 
 enum class Slot : uint32_t { Good = 0, Staged = 1 };
 
@@ -41,7 +38,7 @@ struct SlotHeader {
     uint32_t Magic;
     uint32_t Size;
     uint32_t Crc32;
-    uint32_t Check;             // ~Magic ^ Size ^ Crc32
+    uint32_t Check;
 };
 
 const esp_partition_t *Golden;
@@ -84,8 +81,6 @@ bool SlotCrc(Slot s, uint32_t size, uint32_t &crc)
     return true;
 }
 
-// The image in a slot to the FPGA's flash, checked: borrowed from the running FPGA, or
-// with it held
 bool SlotToFpga(Slot s, uint32_t size, uint32_t crc)
 {
     Buffer b;
@@ -143,7 +138,6 @@ bool StagedToGood(uint32_t size, uint32_t crc)
     return WriteHeader(Slot::Good, size, crc);
 }
 
-// Reset and reload the FPGA; true once its design answers on the link
 bool Reload()
 {
     if (!CfgBus::Hold() || CfgBus::Release(1000) < 0) {
@@ -159,7 +153,6 @@ bool Reload()
     return false;
 }
 
-// The last good bitstream back, with the FPGA held, then reloaded
 bool RestoreGood()
 {
     SlotHeader h;
@@ -180,7 +173,6 @@ bool RestoreGood()
     return Reload();
 }
 
-// An iCE40 bitstream has its sync word near the start
 bool LooksLikeBitstream(Slot s)
 {
     uint8_t head[64];
@@ -240,7 +232,6 @@ Status CommitBitstream(uint32_t size, uint32_t crc)
     return Status::Ok;
 }
 
-// ------------------------------------------------------------ ESP32 firmware
 // Written to the OTA partition not running, in order (erased as it goes), then booted. The
 // new firmware is on trial: it confirms itself once it has run for a while
 // (ConfirmFirmware), and the bootloader goes back to this one if it resets before then.
@@ -296,13 +287,12 @@ Status CommitFirmware(uint32_t size, uint32_t crc)
     return Status::Ok;
 }
 
-// ------------------------------------------------------------ transfer
 struct {
     bool Active;
     UploadType Type;
     uint32_t Size;
-    uint32_t Next;              // firmware: the next offset (written in order)
-    uint32_t Erased;            // bitstream: sectors of the staged slot erased
+    uint32_t Next;
+    uint32_t Erased;
     int64_t Last;
 } Up;
 
@@ -325,7 +315,6 @@ void Start()
         ESP_LOGE(Tag, "no golden partition");
         Golden = nullptr;
     }
-    // A firmware on trial confirms itself once it has run for a while
     esp_ota_img_states_t state;
     if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
         state == ESP_OTA_IMG_PENDING_VERIFY) {

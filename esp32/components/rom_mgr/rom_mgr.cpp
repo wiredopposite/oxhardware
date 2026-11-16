@@ -16,11 +16,9 @@
 #include "smbus.hpp"
 
 namespace RomMgr {
-
 using namespace OxProg;
 
 namespace {
-
 const char *Tag = "rom_mgr";
 
 // The protocol server and the trial watcher both change the catalogue
@@ -33,8 +31,7 @@ struct Guard {
 
 using FpgaLink::Space;
 
-// ------------------------------------------------------------ flash layout
-// docs/01-interface.md §6.1: parts up to 4 MB use the small layout
+// docs/dev/link.md#flash-layout: parts up to 4MB use the small layout
 struct Layout {
     uint32_t FlashSize;
     uint32_t CatAddr;           // copy A; copy B follows it
@@ -60,7 +57,6 @@ bool LoadLayout()
     return true;
 }
 
-// ------------------------------------------------------------ catalogue
 constexpr uint32_t CatMagic = 0x43524F58;   // "XORC" in flash byte order
 constexpr uint16_t CatVersion = 1;
 constexpr uint32_t CatSector = 4096;
@@ -69,8 +65,8 @@ constexpr uint8_t EntriesMax = 64;
 #pragma pack(push, 1)
 struct CatEntry {
     Role Kind;
-    uint8_t Bank;               // NoBank: unused
-    uint8_t Flags;              // RomFlags
+    uint8_t Bank;
+    uint8_t Flags;
     uint8_t Reserved;
     uint32_t Size;
     uint32_t Crc32;
@@ -88,13 +84,13 @@ struct Catalogue {
     uint8_t Entries;
     uint8_t Reserved[3];
     CatEntry Entry[EntriesMax];
-    uint32_t Crc32;             // of everything before it
+    uint32_t Crc32;
 };
 #pragma pack(pop)
 static_assert(sizeof(Catalogue) <= CatSector);
 
 Catalogue Cat, Tmp;
-int Copy = -1;                  // the copy Cat was read from or last written to
+int Copy = -1;
 bool Loaded = false;
 
 bool Valid(const CatEntry &e) { return e.Bank != NoBank; }
@@ -155,7 +151,6 @@ Status Ensure()
     return (Loaded || Load()) ? Status::Ok : Status::LayoutInvalid;
 }
 
-// Writes the other copy with the next sequence number and verifies it
 bool Save()
 {
     const int k = Copy ^ 1;
@@ -173,10 +168,9 @@ bool Save()
     return true;
 }
 
-// ------------------------------------------------------------ retail tables
-// What the System BIOS is built from (the console's own retail BIOS's tables), kept for
-// the console: after the two catalogue copies, a header sector written last, then the
-// tables. One copy: an upload cut off leaves none, and the host uploads them again.
+// The tables the System BIOS is built from, kept for the console after the catalogue: a
+// header sector written last, then the tables. There's one copy, so an upload cut off
+// leaves none and the host uploads them again.
 constexpr uint32_t TablesMagic = 0x4C425458;    // "XTBL" in flash byte order
 constexpr uint32_t TablesArea = 32 * 1024;
 constexpr uint32_t TablesMax = TablesArea - CatSector;
@@ -186,8 +180,8 @@ struct TablesHeader {
     uint32_t Magic;
     uint32_t Size;
     uint32_t Crc32;
-    uint32_t SourceCrc32;       // what the host made them from (its retail BIOS)
-    uint32_t Check;             // ~Magic ^ Size ^ Crc32 ^ SourceCrc32
+    uint32_t SourceCrc32;
+    uint32_t Check;
 };
 #pragma pack(pop)
 
@@ -234,7 +228,6 @@ int FreeEntry()
 
 uint32_t BankAddr(uint8_t bank) { return L.RomBase + BankSlot(bank) * SlotSize; }
 
-// n slots from s
 uint64_t Run(uint32_t s, uint32_t n) { return (n >= 64 ? ~0ull : (1ull << n) - 1) << s; }
 
 uint64_t SlotMask(uint8_t bank)
@@ -244,20 +237,18 @@ uint64_t SlotMask(uint8_t bank)
 
 uint32_t Slots(const CatEntry &e) { return e.Size / SlotSize; }
 
-// ------------------------------------------------------------ FPGA bank registers
-// docs/01-interface.md §5.2
 constexpr uint16_t RegLpcCtrl = 0x0020;
 constexpr uint16_t RegPending = 0x0023;
 constexpr uint16_t RegDefault = 0x0027;
 constexpr uint16_t RegReadCount = 0x002C;  // memory reads served since LRESET# last fell
 constexpr uint16_t RegBootFlags = 0x003A;
-constexpr uint16_t RegUserBank = 0x003B;   // USER_BANK, SYSTEM_BANK, DIAG_BANK
+constexpr uint16_t RegUserBank = 0x003B;
 constexpr uint8_t CtrlArm = 0x08;
 constexpr uint8_t StatusArmed = 0x08;
-constexpr uint8_t StatusLreset = 0x01;     // LRESET# high: the console is running
+constexpr uint8_t StatusLreset = 0x01;
 
-// BOOT_FLAGS (06-boot-flow §4). Writes set TRIAL_PENDING from bit2 and LAST_FAILED from
-// bit3; bit6 set clears TRIAL_CONFIRMED.
+// BOOT_FLAGS writes set TRIAL_PENDING from bit2 and LAST_FAILED from bit3; bit6 clears
+// TRIAL_CONFIRMED.
 constexpr uint8_t FlagArmedBoot = 0x02;
 constexpr uint8_t FlagTrial = 0x04;
 constexpr uint8_t FlagLastFailed = 0x08;
@@ -284,7 +275,6 @@ bool ReadFlags(uint8_t &f)
     return FpgaLink::Read(Space::Regs, RegBootFlags, &f, 1) && f != 0xFF;
 }
 
-// Keeps LAST_FAILED unless set_failed; sets TRIAL_PENDING to trial; clears TRIAL_CONFIRMED
 bool WriteFlags(bool trial, bool set_failed = false)
 {
     uint8_t f;
@@ -322,14 +312,13 @@ bool PinnedSlots(uint64_t &pinned)
     return true;
 }
 
-// Slots that must not be written
 uint64_t UsedSlots()
 {
     uint64_t pinned;
     return PinnedSlots(pinned) ? CatSlots() | pinned : ~0ull;
 }
 
-constexpr uint32_t ImageSlotsMax = 4;      // 1 M
+constexpr uint32_t ImageSlotsMax = 4;
 
 // Best fit: of the free runs of n slots aligned to n, the one whose enclosing blocks (up
 // to the largest image) are most used, so small images pack together and large aligned
@@ -367,8 +356,6 @@ bool Alloc(uint32_t size, uint8_t &bank)
     return true;
 }
 
-// ------------------------------------------------------------ compaction
-// The catalogue entries inside a run, largest first
 int EntriesIn(uint64_t run, int (&ids)[EntriesMax])
 {
     int k = 0;
@@ -453,7 +440,6 @@ Status Move(int id, uint8_t dest)
     return Status::Ok;
 }
 
-// The banks the Loader reads (06-boot-flow §4), from the catalogue
 void Apply()
 {
     auto bank = [](int i) { return i == NoEntry ? NoBank : Cat.Entry[i].Bank; };
@@ -484,11 +470,9 @@ bool Arm(uint8_t bank, bool trial = false)
     return FpgaLink::Write(Space::Regs, RegLpcCtrl, &ctrl, 1);
 }
 
-// ------------------------------------------------------------ trial boots
-// 06-boot-flow §7: a new Loader or System is armed with TRIAL and must confirm within
-// TrialConfirmUs of its boot starting, before any further reset. A Loader confirms on the
-// boot control port (TRIAL_CONFIRMED, which outlives the reset it then does), a System
-// with ConfirmBoot.
+// A new Loader or System is armed with TRIAL and has to confirm within TrialConfirmUs of
+// its boot starting, before any further reset. A Loader confirms on the boot control port
+// (TRIAL_CONFIRMED outlives the reset it then does), a System with ConfirmBoot.
 constexpr int64_t TrialConfirmUs = 10 * 1000 * 1000;
 
 enum class Phase : uint8_t { None, Armed, Running };
@@ -497,7 +481,7 @@ struct TrialState {
     Phase Now;
     int Entry;
     uint8_t Bank;
-    uint8_t Resets;             // LPC_RESET_COUNT when the trial boot started
+    uint8_t Resets;
     int64_t Start;
 } Tr;
 
@@ -604,16 +588,15 @@ void TrialStep()
     }
 }
 
-// ------------------------------------------------------------ failed-boot detection
-// 06-boot-flow §6. Every armed boot other than a trial is judged from LRESET# and the reads
-// served: a good boot reads its image within about half a second and keeps running; a bad
-// one stops after a few K reads and the SMC resets it again and again, then FRAGs.
+// Every other armed boot is judged from LRESET# and the reads served. A good boot reads
+// its image within about half a second and keeps running; a bad one stops after a few
+// thousand reads and the SMC resets it again and again, then FRAGs.
 constexpr int64_t BootResetUs = 3 * 1000 * 1000;   // a reset sooner than this: failed
-constexpr int64_t BootReadsUs = 2 * 1000 * 1000;   // reads counted this long after it starts
+constexpr int64_t BootReadsUs = 2 * 1000 * 1000;
 constexpr uint32_t BootReadsMin = 64 * 1024;
 
 struct BootWatch {
-    bool Known;                 // Seen holds the reset count of the boot last looked at
+    bool Known;
     uint8_t Seen;
     bool On;
     bool ReadsOk;
@@ -701,7 +684,6 @@ void BootStep()
             return;
         }
     }
-    // A new boot: LRESET# has fallen and risen again since the last one looked at
     if (b.Resets != Bw.Seen && (b.Status & StatusLreset)) {
         Bw.Seen = b.Resets;
         if ((f & FlagArmedBoot) && !(f & FlagTrial)) {
@@ -714,8 +696,6 @@ void BootStep()
     }
 }
 
-// Polled while a trial or an armed boot is being timed; otherwise the LRESET# and boot
-// control interrupts wake the task, with the idle period as a fallback
 constexpr int WatchPollMs = 50;
 constexpr int WatchIdleMs = 1000;
 
@@ -762,7 +742,6 @@ void TrialResume()
     }
 }
 
-// ------------------------------------------------------------ helpers
 template <typename T> bool Take(const uint8_t *in, size_t len, T &v)
 {
     // Shorter requests read as zero-filled (older hosts); longer ones are fine (newer)
@@ -803,17 +782,16 @@ void ClearFlag(Role kind, uint8_t flag)
 
 bool EntryOk(uint8_t id) { return id < EntriesMax && Valid(Cat.Entry[id]); }
 
-// ------------------------------------------------------------ transfers
-constexpr int64_t IdleExpireUs = 30 * 1000 * 1000;   // an abandoned upload frees itself
+constexpr int64_t IdleExpireUs = 30 * 1000 * 1000;
 constexpr uint32_t Block = 64 * 1024;
 
 struct UploadState {
     bool Active;
-    bool Tables;                // the retail tables, not a ROM
+    bool Tables;
     Role Kind;
     uint8_t Bank;
     uint32_t Size;
-    uint16_t Erased;            // erase units done so far (ROMs: 64 K blocks, tables: sectors)
+    uint16_t Erased;
     int64_t Last;
     char Name[NameMax];
 } Up;
@@ -922,7 +900,6 @@ Status UploadWrite(const uint8_t *in, size_t len)
     if (off >= Up.Size || n > Up.Size - off) {
         return Status::BadOffset;
     }
-    // ROMs are erased in 64 K blocks, the tables in sectors
     const uint32_t base = Up.Tables ? TablesData() : BankAddr(Up.Bank);
     const uint32_t unit = Up.Tables ? CatSector : Block;
     for (uint32_t blk = off / unit; blk <= (off + n - 1) / unit; blk++) {
@@ -940,8 +917,8 @@ Status UploadWrite(const uint8_t *in, size_t len)
     return Status::Ok;
 }
 
-// The smallest size the image repeats at (256 or 512 K), comparing CRCs of its pieces. The
-// FPGA mirrors a smaller bank through the 1 MB window, so the console reads the same bytes.
+// The smallest size the image repeats at, by comparing CRCs of its pieces. The FPGA
+// mirrors a smaller bank through the 1MB window, so the console reads the same bytes.
 bool MirrorSize(uint32_t addr, uint32_t size, uint32_t &out, uint32_t &crc)
 {
     out = size;
@@ -999,7 +976,7 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
         return Status::BadCommand;
     }
     if (trial && Tr.Now != Phase::None) {
-        return Status::ProgrammerBusy;          // one trial at a time
+        return Status::ProgrammerBusy;
     }
     if ((c.Flags & CommitUser) && Up.Kind != Role::User) {
         return Status::BadCommand;
@@ -1030,7 +1007,7 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
     }
     const bool current = Up.Kind != Role::User && !trial;
     if (current) {
-        ClearFlag(Up.Kind, RomCurrent);         // straight to current
+        ClearFlag(Up.Kind, RomCurrent);
     }
     if (c.Flags & CommitUser) {
         ClearFlag(Role::User, RomUser);
@@ -1089,7 +1066,6 @@ Status Compact(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
     if (!PlanCompact(n, run, moves)) {
         return Status::NoSpace;
     }
-    // The largest entry first, to where the plan put it
     int ids[EntriesMax];
     EntriesIn(run, ids);
     const CatEntry &e = Cat.Entry[ids[0]];
@@ -1108,7 +1084,6 @@ Status Compact(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
 
 }
 
-// ------------------------------------------------------------ protocol
 void Start()
 {
     Lock = xSemaphoreCreateRecursiveMutex();
@@ -1162,7 +1137,7 @@ Status Rom(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &
             return Status::Protected;
         }
         if (Tr.Now != Phase::None && Tr.Entry == r.Entry) {
-            return Status::ProgrammerBusy;      // on trial
+            return Status::ProgrammerBusy;
         }
         const CatEntry old = e;
         e.Bank = NoBank;
@@ -1214,7 +1189,6 @@ Status Rom(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &
 Status Upload(uint8_t action, const uint8_t *in, size_t len, uint8_t *out, size_t &out_len)
 {
     Guard g;
-    // The bitstream and the ESP32 firmware are the chip's own: chip_update has them
     const bool chip = ChipUpdate::Active();
     switch (UploadAction(action)) {
     case UploadAction::Begin: {
@@ -1364,7 +1338,7 @@ Status ConfirmBoot()
         return Status::FlashError;
     }
     if (!(f & FlagTrial) || b.Active != Tr.Bank || b.Resets != Tr.Resets) {
-        return Status::NotFound;        // not the trial boot (the watcher will see why)
+        return Status::NotFound;
     }
     TrialPass();
     return Status::Ok;

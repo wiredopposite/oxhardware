@@ -1,22 +1,17 @@
-// Boot control port (LCLK domain): eight LPC I/O ports at BOOTCTL_BASE for the Loader
-// (docs/06-boot-flow.md §4). Reads come from bank_ctrl's quasi-static values, registered
-// once here; writes go back to bank_ctrl as a toggle with the port offset and data.
 `default_nettype none
 
 module bootctl_port (
-    input  wire        clk,                 // LCLK
-    input  wire        en,                  // SERVE_EN (quasi-static)
-    input  wire [15:0] base,                // quasi-static
-    input  wire [63:0] vals,                // reads, port +0 at [7:0] (system clock domain)
-    // lpc_target port bus
+    input  wire        clk,
+    input  wire        en,
+    input  wire [15:0] base,
+    input  wire [63:0] vals,
     input  wire        io_addr_last,
     input  wire [15:0] io_addr_nxt,
     input  wire [15:0] io_addr,
     input  wire        io_wr,
     input  wire [7:0]  io_wdata,
-    output reg         hit = 1'b0,          // registered decode
-    output reg  [7:0]  rdata = 8'd0,        // registered with hit
-    // to bank_ctrl
+    output reg         hit = 1'b0,
+    output reg  [7:0]  rdata = 8'd0,
     output reg         wr_tog = 1'b0,
     output reg  [2:0]  wr_off = 3'd0,
     output reg  [7:0]  wr_data = 8'd0

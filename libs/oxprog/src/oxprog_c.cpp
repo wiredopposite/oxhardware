@@ -1,5 +1,3 @@
-// The C API (oxprog/oxprog.h) over OxProg::Client
-
 #define OXPROG_BUILDING
 #include "oxprog/oxprog.h"
 
@@ -29,7 +27,6 @@ static_assert(OXPROG_COMMIT_BOOT == CommitBoot && OXPROG_ROM_USER == RomUser);
 static_assert(OXPROG_BOOT_RESET == BootReset && OXPROG_FPGA_CONFIRMED == FpgaConfirmed);
 
 namespace {
-
 class CallbackTransport : public Transport {
 public:
     explicit CallbackTransport(const oxprog_transport_t &t) : T(t) { }
@@ -74,7 +71,6 @@ struct oxprog_client {
 };
 
 extern "C" {
-
 oxprog_client_t *oxprog_client_new(const oxprog_transport_t *transport, uint32_t timeout_ms)
 {
     if (transport == nullptr) {

@@ -1,27 +1,19 @@
-# UPduino v3.1 pin map (all designs; unused names are ignored via -nowarn)
-# Header labels on the board are the FPGA package pin numbers ("gpio_N" = pin N).
-
-# 12 MHz oscillator -> IOB_25B_G3 (global). Requires R16 ("OSC") shorted.
+# Needs R16 ("OSC") shorted
 set_io -nowarn clk12 20
 
-# On-board RGB LED (dedicated current-sink pins, driven via SB_RGBA_DRV)
 set_io -nowarn led_green 39
 set_io -nowarn led_blue  40
 set_io -nowarn led_red   41
 
-# Config flash (W25Q32) in user mode after configuration. flash_csn idles high when unused.
 set_io -nowarn -pullup yes flash_csn 16
 set_io -nowarn flash_sck  15
-set_io -nowarn flash_mosi 14   # FPGA SPI_SO -> flash DI (IO0)
-set_io -nowarn flash_miso 17   # flash DO (IO1) -> FPGA SPI_SI
+set_io -nowarn flash_mosi 14
+set_io -nowarn flash_miso 17
 
-# Bring-up UART (Raspberry Pi Debug Probe "U" port, 3.3 V)
-#   FPGA TX gpio_2  -> probe RX (yellow)
-#   FPGA RX gpio_46 <- probe TX (orange)
 set_io -nowarn uart_tx 2
 set_io -nowarn uart_rx 46
 
-# ESP32 link (docs/05-devboard-wiring.md). Pin 44 is a global-buffer input.
+# Pin 44 is a global-buffer input
 set_io -nowarn link_sck   44
 set_io -nowarn link_mosi  45
 set_io -nowarn link_miso  47
@@ -31,23 +23,16 @@ set_io -nowarn usb_pu  13
 set_io -nowarn usb_dp  19
 set_io -nowarn usb_dn  18
 
-# Xbox LPC, passive probe (left header, contiguous run 32..38, skipping 35). Inputs only.
-# Series resistors: 33-220 ohm on LCLK/LAD/LFRAME#/LRESET#; 3.3 V sense via 10 k series
-# plus 100 k pull-down to GND at the FPGA pin (iCE40 has no internal pull-downs).
-# Power the UPduino (USB) before the Xbox, and switch the Xbox off first.
-# Pin 35 is NOT usable while the PLL is in use (shares the PLL output I/O site).
+# LPC. Pin 35 can't be used while the PLL runs.
 set_io -nowarn lpc_reset_n   32
-set_io -nowarn lpc_frame_n   31   # no pull-up: driven low for the 1.6 abort
-set_io -nowarn lpc_clk       37   # IOT_45a_G1, global-capable
+set_io -nowarn lpc_frame_n   31
+set_io -nowarn lpc_clk       37   # global-buffer input
 set_io -nowarn lpc_lad[0]    34
 set_io -nowarn lpc_lad[1]    43
 set_io -nowarn lpc_lad[2]    36
 set_io -nowarn lpc_lad[3]    42
 set_io -nowarn v33_sense     38
-# lpc_serve: LFRAME# abort via N-MOSFET (IRLML6244: G=1 S=2 D=3). Gate from pin 31, and
-# optionally 25/26/27 too (same signal, more gate drive); 10k gate-source pull-down,
-# source to Xbox GND at the header, drain to LFRAME#.
-# LFRAME# itself is sensed on pin 23.
+# LFRAME# MOSFET gate, the same signal on all four
 set_io -nowarn lframe_gate[0] 31
 set_io -nowarn lframe_gate[1] 25
 set_io -nowarn lframe_gate[2] 26

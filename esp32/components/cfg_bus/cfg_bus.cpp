@@ -13,9 +13,7 @@
 #include "freertos/task.h"
 
 namespace CfgBus {
-
 namespace {
-
 const char *Tag = "cfg_bus";
 
 constexpr spi_host_device_t Host = SPI2_HOST;
@@ -75,7 +73,6 @@ void Select(bool on)
     gpio_set_level(Pins::CfgCs, on ? 0 : 1);
 }
 
-// One CS-framed transfer: tx_len bytes from TxBuf, total bytes clocked = len.
 bool Xfer(size_t len)
 {
     Select(true);
@@ -109,7 +106,6 @@ bool Status(uint8_t *s)
     return true;
 }
 
-// Polls BUSY until clear. Sleeps between polls when long waits are expected.
 bool WaitReady(uint32_t timeout_ms, bool sleep)
 {
     const int64_t end = esp_timer_get_time() + int64_t(timeout_ms) * 1000;
@@ -142,7 +138,6 @@ bool Owned()
     return IsHeld || IsTaken;
 }
 
-// SPI master on the config bus, CS# a GPIO; the flash woken
 bool BusOpen()
 {
     gpio_reset_pin(Pins::CfgCs);
@@ -218,7 +213,7 @@ bool Hold()
         return false;
     }
     ResetStart();
-    esp_rom_delay_us(1000);                    // FPGA releases its pins
+    esp_rom_delay_us(1000);
     if (!BusOpen()) {
         ResetEnd();
         return false;
@@ -274,12 +269,10 @@ uint8_t Probe(uint8_t id[3])
     }
     ResetStart();
     esp_rom_delay_us(1000);
-    // Undriven levels: bit0 CS, 1 SCK, 2 MOSI (SI), 3 MISO (SO)
     const uint8_t idle = uint8_t(gpio_get_level(Pins::CfgCs) |
                                  (gpio_get_level(Pins::CfgSck) << 1) |
                                  (gpio_get_level(Pins::CfgMosi) << 2) |
                                  (gpio_get_level(Pins::CfgMiso) << 3));
-    // Bit-banged JEDEC ID, ~100 kHz
     const gpio_num_t outs[] = { Pins::CfgCs, Pins::CfgSck, Pins::CfgMosi };
     for (gpio_num_t p : outs) {
         gpio_set_level(p, p == Pins::CfgCs);
@@ -373,7 +366,7 @@ bool Write(uint32_t addr, const uint8_t *data, size_t len)
         return false;
     }
     while (len) {
-        size_t n = 256 - (addr & 0xFF);       // up to the end of the page
+        size_t n = 256 - (addr & 0xFF);
         if (n > len) {
             n = len;
         }
@@ -394,7 +387,6 @@ bool Write(uint32_t addr, const uint8_t *data, size_t len)
 
 bool Crc32(uint32_t addr, uint32_t len, uint32_t *crc)
 {
-    // CRC-32 as zlib, computed while reading in 4 KB pieces
     static uint32_t table[256];
     if (!table[1]) {
         for (uint32_t i = 0; i < 256; i++) {

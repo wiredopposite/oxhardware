@@ -8,9 +8,6 @@
 #include "oxprog/oxprog.hpp"
 
 namespace OxProg {
-
-// A byte stream to the chip: the LPC console port from the console, a serial
-// port from a PC
 class Transport {
 public:
     virtual ~Transport() = default;
@@ -23,18 +20,16 @@ public:
     virtual void Discard() { }
 };
 
-// Done and total bytes, for progress
 using Progress = std::function<void(uint32_t Done, uint32_t Total)>;
 
 struct UploadOptions {
     char     Name[NameMax + 1] = {};
     uint16_t Version = 1;
     uint32_t SourceCrc32 = 0;
-    uint8_t  Flags = 0;     // CommitFlags
-    bool     Force = false; // BeginForce
+    uint8_t  Flags = 0;
+    bool     Force = false;
 };
 
-// Commands are sent one at a time, each waits for its reply
 class Client {
 public:
     explicit Client(Transport &Transport, uint32_t TimeoutMs = 5000)
@@ -44,18 +39,14 @@ public:
     Status Reboot();
     Status SmbusRead(uint8_t Address, uint8_t Command, uint8_t &Value);
     Status SmbusWrite(uint8_t Address, uint8_t Command, uint8_t Value);
-    // Arms Entry for the console's next boot, with BootReset also resets it
     Status Boot(uint8_t Entry, uint8_t Flags = BootReset);
     Status ConfirmBoot();
 
-    // The whole catalogue
     Status ListRoms(std::vector<RomEntry> &Out);
     Status GetRom(uint8_t Entry, RomEntry &Out);
     Status DeleteRom(uint8_t Entry);
     Status RenameRom(uint8_t Entry, const char *Name);
-    // NoEntry for none
     Status SetUserRom(uint8_t Entry);
-    // Moves entries until a run of ImageSize is free (after an upload's Fragmented)
     Status CompactRoms(uint32_t ImageSize);
 
     // Begin, the image in chunks, then commit with its CRC. Aborted on the
@@ -66,8 +57,6 @@ public:
         RomEntry *Entry = nullptr);
     Status AbortUpload();
 
-    // The whole image, checked against the CRC the chip reports. Entry is
-    // for DownloadType::Rom.
     Status Download(DownloadType Type, std::vector<uint8_t> &Out,
         uint8_t Entry = NoEntry, const Progress &OnProgress = {});
 

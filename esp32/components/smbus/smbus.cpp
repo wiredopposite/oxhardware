@@ -11,21 +11,17 @@
 #include "freertos/task.h"
 
 namespace Smbus {
-
 namespace {
-
 const char *Tag = "smbus";
 
 constexpr uint32_t ClockHz = 100000;
 constexpr int TimeoutMs = 25;
 constexpr int Tries = 3;
-// What the ESP32 answers as between its own transfers (docs/03-esp32.md §13)
 constexpr uint16_t SlaveAddr = 0x60;
 
 SemaphoreHandle_t Lock;
 i2c_slave_dev_handle_t Slave;
 
-// Pins back to floating inputs, when neither the master nor the slave has them
 void Release()
 {
     const gpio_num_t pins[] = {Pins::SmbSda, Pins::SmbScl};

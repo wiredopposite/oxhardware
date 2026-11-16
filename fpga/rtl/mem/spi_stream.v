@@ -1,39 +1,25 @@
-// Sequential SPI-flash byte streamer (single-bit SPI, mode 0, READ 0x03).
-// SCK may pause high between bytes (allowed by W25Q-class parts).
+// Streams bytes from SPI flash with READ (0x03), SCK = clk/2. After a start at address A
+// it keeps the flash selected and reads A, A+1, ... into a 2-byte buffer, pausing SCK
+// high while the buffer is full. A request for the buffered byte is acked the next
+// clock, one a few bytes ahead waits for the stream, and anything else restarts the read.
 //
-// Runs in whatever clock domain it is given (lpc_serve: LCLK, 33.3 MHz); SCK = clk/2.
-// After a (re)start at address A it keeps the flash selected and streams bytes A, A+1, ...
-// into a 2-entry buffer, stopping SCK while the buffer is full. A requester asks for one
-// byte at a time:
-//   req + req_addr held until ack. ack pulses for one clock with ack_data.
-//   - buffered byte at req_addr          -> ack next clock
-//   - req_addr is a little ahead (< 8)   -> keep streaming, discard bytes until it arrives
-//   - anything else                      -> restart the read at req_addr
-// park (synchronised here) hands the flash to another master between reads: the stream
-// deselects, drops its buffer and reports parked; requests wait until park is released.
-// At power-up (and whenever 'rst' is asserted) it sends Release-Power-Down (0xAB) first:
-// the iCE40 may leave the flash in deep power-down after configuration.
+// MISO is sampled at the end of SCK's high phase rather than the start, which gives the
+// flash two clocks from the falling edge and makes the read independent of placement.
 //
-// MISO is sampled on the clock that ends SCK's high phase, not the one that starts it: the
-// flash's data then has two clocks (60 ns) from the falling edge instead of one, so the
-// read works whatever the placement of the pad-to-register paths.
-//
-// Costs at SCK = 16.7 MHz: restart ~41 SCK (~2.5 us) to the first byte, then one byte per
-// 8 SCK plus one clock (~0.5 us).
+// Release Power-Down (0xAB) is sent after reset, since the iCE40 can leave the flash
+// powered down after configuration.
 `default_nettype none
 
 module spi_stream (
     input  wire        clk,
-    input  wire        rst,            // sync, active high: abort, deselect, re-wake
-    input  wire        park,           // async: deselect and leave the flash alone
+    input  wire        rst,
+    input  wire        park,
     output reg         parked = 1'b0,
-    // requester
     input  wire        req,
     input  wire [23:0] req_addr,
     output reg         ack,
     output reg  [7:0]  ack_data,
-    output reg         restarted,      // pulse: a restart was needed (statistics)
-    // flash pins
+    output reg         restarted,
     output reg         spi_cs_n,
     output reg         spi_sck,
     output reg         spi_mosi,
@@ -43,24 +29,22 @@ module spi_stream (
                      S_CMD = 3'd4, S_DATA = 3'd5;
 
     reg [2:0]  state = S_WAKE;
-    reg [31:0] tx;                 // command / address shifter (MSB first)
-    reg [5:0]  nbits;              // bits left in the current command
+    reg [31:0] tx;
+    reg [5:0]  nbits;
     reg [7:0]  rx;
     reg [2:0]  rxbits;
-    reg        phase;              // 0: SCK low (set MOSI), 1: SCK high
-    reg        pend;               // S_DATA: a rising edge has clocked a bit not yet sampled
+    reg        phase;
+    reg        pend;
     reg [7:0]  gap;
-    reg [23:0] next_addr;          // address of the byte currently being shifted in
+    reg [23:0] next_addr;
 
-    // 2-entry buffer: entry 0 = head
     reg        v0, v1;
     reg [23:0] a0, a1;
     reg [7:0]  d0, d1;
 
     wire        full     = v0 && v1;
-    // How far ahead of the oldest available/in-flight byte the request is. The compare is
-    // registered (one clock late) for timing; 'settle' blocks decisions for a clock after
-    // anything that changes the buffer head (pop, restart) and after a new request.
+    // The compares are registered for timing, so 'settle' holds off a decision for a
+    // clock after the buffer head changes.
     wire [23:0] base     = v0 ? a0 : next_addr;
     wire [23:0] ahead    = req_addr - base;
     reg         hit0, in_reach, settle, req_d;
@@ -69,13 +53,13 @@ module spi_stream (
         in_reach <= (state == S_DATA || state == S_CMD || state == S_GAP) && (ahead < 24'd8);
         req_d    <= req;
     end
-    // Parking waits for the wake sequence, so the flash is never left powered down
+    // Parking waits for the wake sequence so the flash isn't left powered down
     reg [1:0] park_s = 2'b00;
     reg       hold = 1'b0;
     always @(posedge clk) begin
         park_s <= {park_s[0], park};
         hold   <= park_s[1] && state != S_WAKE && state != S_WAKEGAP;
-        parked <= hold && spi_cs_n;     // deselected for at least a clock
+        parked <= hold && spi_cs_n;
     end
     wire do_req     = req && req_d && !ack && !settle && !hold;
     wire do_hit     = do_req && hit0;
@@ -84,7 +68,6 @@ module spi_stream (
     wire do_restart = do_req && !hit0 && !in_reach && can_rst;
     wire pop        = do_hit || (do_skip && v0);
 
-    // byte completes on this clock (end of SCK high after the 8th bit)
     wire        byte_done = (state == S_DATA) && !phase && pend && (rxbits == 3'd7);
     wire [7:0]  byte_val  = {rx[6:0], spi_miso};
 
@@ -111,18 +94,15 @@ module spi_stream (
             pend     <= 1'b0;
             v0 <= 1'b0; v1 <= 1'b0;
         end else begin
-            // ---------------------------------------------------------- requester
-            // (buffer pops happen here; pushes below may land in the same clock)
-            settle <= pop || do_restart || (byte_done && !v0);   // head changed
+            settle <= pop || do_restart || (byte_done && !v0);
             if (do_hit) begin
                 ack      <= 1'b1;
                 ack_data <= d0;
             end
-            if (pop) begin                        // hit, or discard a byte we've gone past
+            if (pop) begin
                 v0 <= v1; a0 <= a1; d0 <= d1; v1 <= 1'b0;
             end
             if (do_restart) begin
-                    // restart the read at req_addr
                     restarted <= 1'b1;
                     spi_cs_n  <= 1'b1;
                     spi_sck   <= 1'b0;
@@ -132,15 +112,14 @@ module spi_stream (
                     tx        <= {8'h03, req_addr};
                     nbits     <= 6'd32;
                     next_addr <= req_addr;
-                    gap       <= 8'd2;            // CS# high >= 2 clocks (60 ns)
+                    gap       <= 8'd2;
                     state     <= S_GAP;
             end
 
-            // ---------------------------------------------------------- SPI engine
             case (state)
-            S_WAKE, S_CMD: begin                  // shift tx out, MSB first
+            S_WAKE, S_CMD: begin
                 if (gap != 0 && state == S_WAKE) begin
-                    gap <= gap - 1'b1;            // short CS# high before wake
+                    gap <= gap - 1'b1;
                 end else if (!(do_restart && state == S_CMD)) begin
                     spi_cs_n <= 1'b0;
                     if (!phase) begin
@@ -155,7 +134,7 @@ module spi_stream (
                         if (nbits == 6'd1) begin
                             if (state == S_WAKE) begin
                                 state <= S_WAKEGAP;
-                                gap   <= 8'd120;      // tRES1 3 us
+                                gap   <= 8'd120;      // tRES1, 3us
                             end else begin
                                 state  <= S_DATA;
                                 rxbits <= 3'd0;
@@ -167,7 +146,7 @@ module spi_stream (
             end
             S_WAKEGAP: begin
                 spi_sck <= 1'b0;
-                if (phase) begin                  // finish the last SCK high phase
+                if (phase) begin
                     phase <= 1'b0;
                 end else begin
                     spi_cs_n <= 1'b1;
@@ -185,12 +164,8 @@ module spi_stream (
             end
             S_DATA: begin
                 if (!do_restart) begin
-                    // SCK is high after the last address bit and between bytes. Falling
-                    // edge: the flash shifts the next bit out; one clock later SCK rises;
-                    // the bit is sampled on the clock after that (pend), together with
-                    // the next falling edge. A completed byte takes that clock on its own,
-                    // so the full check below sees the pushed entry; a full buffer stalls
-                    // with SCK high.
+                    // A completed byte takes its sampling clock on its own, so the full
+                    // check sees the pushed entry.
                     if (!phase) begin
                         if (pend) begin
                             pend   <= 1'b0;
@@ -199,7 +174,6 @@ module spi_stream (
                         end
                         if (byte_done) begin
                             next_addr <= next_addr + 1'b1;
-                            // push; account for a pop in the same clock (requester above)
                             if (pop) begin
                                 if (v1) begin a0 <= a1; d0 <= d1; v0 <= 1'b1;
                                               a1 <= next_addr; d1 <= byte_val; v1 <= 1'b1; end

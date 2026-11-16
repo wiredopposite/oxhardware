@@ -1,17 +1,9 @@
 #pragma once
 
-// PC protocol on UART0 (docs/03-esp32.md §12).
-//
-// Wire: COBS-encoded frames, each preceded and followed by 0x00. Decoded frame:
-//   type (1) | seq (1) | len (2, LE) | payload (len) | CRC-32 (4, LE, over type..payload)
-// Requests carry cmd (2, LE) + arguments. Every request gets exactly one response with
-// the same seq: OK = cmd + data, ERR = cmd + error code (1) + message.
-
 #include <cstddef>
 #include <cstdint>
 
 namespace HostLink {
-
 enum class FrameType : uint8_t {
     Request = 0x01,
     Ok = 0x02,
@@ -29,8 +21,6 @@ enum class Error : uint8_t {
 
 inline constexpr size_t MaxPayload = 4096 + 64;
 
-// Response under construction. Handlers append data; the command code is added by
-// HostLink.
 class Reply {
 public:
     bool Put(const void *data, size_t len);
@@ -54,7 +44,6 @@ private:
     Error ErrCode = Error::Failed;
 };
 
-// Argument reader with bounds checks; any overrun sets Bad().
 class Args {
 public:
     Args(const uint8_t *data, size_t len) : Ptr(data), Left(len) {}
@@ -73,7 +62,6 @@ private:
 
 using Handler = void (*)(Args &args, Reply &reply);
 
-// Command codes: high byte = group, low byte = command.
 namespace Cmd {
 inline constexpr uint16_t SysPing = 0x0000;
 inline constexpr uint16_t SysVersion = 0x0001;
@@ -105,13 +93,10 @@ inline constexpr uint16_t NorWrite = 0x0603;
 inline constexpr uint16_t NorCrc = 0x0604;
 }
 
-// Takes over UART0 at the console baud rate, routes ESP-IDF logging into Log frames and
-// starts the receive task. Register handlers before or after; requests for unregistered
-// commands are answered UnknownCommand.
 void Start();
 void Register(uint16_t cmd, Handler handler);
 
-// One buffer for command handlers: they run one at a time, on the host_link task
+// Shared by command handlers, which run one at a time
 inline constexpr size_t ScratchSize = 4096 + 8;
 uint8_t *Scratch();
 void SendEvent(uint16_t id, const void *data, size_t len);

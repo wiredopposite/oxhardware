@@ -1,4 +1,4 @@
-"""PC side of the OpenOX ESP32 protocol (docs/03-esp32.md §12).
+"""PC side of the ESP32's PC protocol (docs/dev/esp32.md#pc-protocol).
 
 COBS-encoded frames delimited by 0x00:
     type (1) | seq (1) | len (2, LE) | payload | CRC-32 (4, LE, over type..payload)
@@ -12,7 +12,6 @@ import serial
 
 REQUEST, OK, ERR, EVENT, LOG = 1, 2, 3, 4, 5
 ERRORS = {1: "unknown command", 2: "bad arguments", 3: "busy", 4: "failed"}
-
 
 def cobs_encode(data):
     out = bytearray(b"\x00")
@@ -32,7 +31,6 @@ def cobs_encode(data):
     out[code_at] = code
     return bytes(out)
 
-
 def cobs_decode(data):
     out = bytearray()
     i = 0
@@ -47,10 +45,8 @@ def cobs_decode(data):
             out.append(0)
     return bytes(out)
 
-
 class LinkError(Exception):
     pass
-
 
 class Link:
     """Request/response over the ESP32's UART0. Log and event frames go to callbacks;
@@ -141,7 +137,6 @@ class Link:
                             + (f": {msg}" if msg else ""))
         return body[2:]
 
-
 class Reader:
     """Sequential decoder for response payloads."""
 
@@ -170,7 +165,6 @@ class Reader:
         s = self.d[self.i:self.i + n].decode(errors="replace")
         self.i += n
         return s
-
 
 def wait_forever():
     try:

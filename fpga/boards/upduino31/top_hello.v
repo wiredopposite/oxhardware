@@ -1,10 +1,7 @@
-// UPduino v3.1 bring-up design "hello": 12 MHz -> PLL 48 MHz, status LED, UART banner + echo.
-//
-// LED:  green blink  = PLL locked, design running on 48 MHz
-//       red blink    = PLL not locked (no 12 MHz: check R16 "OSC" is shorted)
-//       blue flash   = UART byte received
-// UART: 115200 8N1 on gpio_2 (TX) / gpio_46 (RX). Prints a banner at start-up and
-//       whenever Enter is pressed; echoes everything else.
+// hello: UPduino bring-up. Prints a banner on the UART (115200, pins 2 and 46) at
+// start-up and on Enter, and echoes everything else.
+// LED: green blinking with the PLL locked, red blinking without the 12MHz clock (R16
+// "OSC" needs shorting), blue on each byte received.
 `default_nettype none
 
 module top_hello (
@@ -18,8 +15,6 @@ module top_hello (
 );
     assign flash_csn = 1'b1;
 
-    // ---------------------------------------------------------------- clocks
-    // 12 MHz * (DIVF+1) / (2^DIVQ * (DIVR+1)) = 12 * 64 / 16 = 48 MHz (VCO 768 MHz)
     wire clk48, pll_locked;
     SB_PLL40_CORE #(
         .FEEDBACK_PATH("SIMPLE"),
@@ -35,13 +30,11 @@ module top_hello (
         .BYPASS      (1'b0)
     );
 
-    // Low-frequency oscillator (~10 kHz) so the LED can report "no clock".
     wire clk_lf;
     SB_LFOSC u_lfosc (.CLKLFPU(1'b1), .CLKLFEN(1'b1), .CLKLF(clk_lf));
     reg [12:0] lf_cnt = 0;
     always @(posedge clk_lf) lf_cnt <= lf_cnt + 1'b1;
 
-    // ---------------------------------------------------------------- reset
     reg [1:0]  lock_sync = 0;
     reg [15:0] rst_cnt   = 0;
     wire       rst       = !rst_cnt[15];
@@ -51,7 +44,6 @@ module top_hello (
         else if (rst)        rst_cnt <= rst_cnt + 1'b1;
     end
 
-    // ---------------------------------------------------------------- UART
     wire [7:0] rx_data;
     wire       rx_valid;
     uart_rx #(.CLKS_PER_BIT(417)) u_rx (
@@ -65,7 +57,6 @@ module top_hello (
         .clk(clk48), .rst(rst), .data(tx_data), .valid(tx_valid), .ready(tx_ready), .tx(uart_tx)
     );
 
-    // Banner text
     localparam integer BANNER_LEN = 31;
     reg [4:0] banner_idx;
     reg       banner_active;
@@ -106,7 +97,6 @@ module top_hello (
         endcase
     end
 
-    // One-byte holding register for echo so a byte arriving while TX is busy isn't lost.
     reg [7:0] echo_byte;
     reg       echo_pending;
 
@@ -142,9 +132,8 @@ module top_hello (
         end
     end
 
-    // ---------------------------------------------------------------- LED
     reg [24:0] blink_cnt = 0;
-    reg [21:0] rx_flash  = 0;      // ~87 ms at 48 MHz
+    reg [21:0] rx_flash  = 0;
     always @(posedge clk48) begin
         blink_cnt <= blink_cnt + 1'b1;
         if (rx_valid)           rx_flash <= {22{1'b1}};
@@ -156,8 +145,8 @@ module top_hello (
     wire on_blue  = pll_locked && (rx_flash != 0);
 
     SB_RGBA_DRV #(
-        .CURRENT_MODE("0b1"),          // half-current mode
-        .RGB0_CURRENT("0b000001"),     // ~2 mA: plenty for an indicator
+        .CURRENT_MODE("0b1"),
+        .RGB0_CURRENT("0b000001"),
         .RGB1_CURRENT("0b000001"),
         .RGB2_CURRENT("0b000001")
     ) u_rgb (

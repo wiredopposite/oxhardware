@@ -1,7 +1,6 @@
 #include "cobs.hpp"
 
 namespace HostLink::Cobs {
-
 size_t Encode(const uint8_t *in, size_t len, uint8_t *out)
 {
     size_t code_at = 0;

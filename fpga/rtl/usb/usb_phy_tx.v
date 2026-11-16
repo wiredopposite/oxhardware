@@ -1,16 +1,9 @@
-// USB full-speed transmitter, 48 MHz (one bit every 4 clocks).
+// USB full-speed transmitter at 48MHz. The SIE hands over one byte at a time with a
+// toggle, and the first byte (the PID) starts the packet: SYNC, the bytes, CRC16 if
+// b_crc, then EOP. done_tog flips once the line is released.
 //
-// Bytes come from the SIE domain one at a time: the SIE sets b_data / b_last / b_crc and
-// flips b_tog; the transmitter flips b_taken when it has copied the byte, and the SIE then
-// supplies the next one (it has a full byte time to do so). The first byte of a packet
-// (the PID) starts it: SYNC, the bytes LSB first, CRC16 over everything after the PID if
-// b_crc, then EOP (two bits of SE0, one of J). Bit stuffing and NRZI as usual; a stuffed
-// bit after the last six ones goes out before the EOP. done_tog flips once the line is
-// released.
-//
-// The next value of every register is worked out one clock before the bit boundary (p2)
-// and only loaded at the boundary (bnd), so the boundary's enables are single flip-flops
-// and its data paths one LUT.
+// Every register's next value is worked out a clock before the bit boundary (p2) and
+// loaded at it (bnd), which keeps the boundary's logic to one LUT.
 `default_nettype none
 
 module usb_phy_tx (
@@ -38,8 +31,8 @@ module usb_phy_tx (
     reg [3:0]  n = 4'd0;
     reg [7:0]  sh = 8'd0;
     reg        last = 1'b0, crc_en = 1'b0, pid = 1'b0;
-    reg [5:0]  ones = 6'd0;              // shift: ones[5] = six ones sent
-    reg        j = 1'b1;                 // current data state, 1 = J
+    reg [5:0]  ones = 6'd0;
+    reg        j = 1'b1;
     reg [15:0] crc = 16'hFFFF;
 
     always @(posedge clk) begin
@@ -49,7 +42,6 @@ module usb_phy_tx (
         bnd   <= p2;
     end
 
-    // Decide (p2): what the coming bit boundary does
     wire stuff  = ones[5];
     wire in_eop = (st == S_EOP);
     wire norm   = !stuff && !in_eop;
@@ -86,7 +78,6 @@ module usb_phy_tx (
         end
     end
 
-    // Apply: load a packet's first byte (start) or the decided values (bnd)
     always @(posedge clk) begin
         if (start) begin
             seen    <= tog_s[1];

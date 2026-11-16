@@ -1,12 +1,9 @@
-// 8N1 UART transmitter.
-// Accepts a byte when valid && ready; tx idles high.
-// The bit timer counts up from zero (so its carry chain packs cleanly) and flags the
-// end of each bit period one cycle early (baud_done) to keep the compare off the
-// critical path at 48 MHz.
+// 8N1 UART transmitter. The bit timer flags the end of a bit a clock early to keep the
+// compare off the critical path.
 `default_nettype none
 
 module uart_tx #(
-    parameter integer CLKS_PER_BIT = 417   // 48 MHz / 115200
+    parameter integer CLKS_PER_BIT = 417
 ) (
     input  wire       clk,
     input  wire       rst,
@@ -17,7 +14,7 @@ module uart_tx #(
 );
     localparam integer CW = $clog2(CLKS_PER_BIT);
 
-    reg [8:0]    shreg;    // remaining bits: data[7:0], stop
+    reg [8:0]    shreg;
     reg [3:0]    bitcnt;
     reg [CW-1:0] baud;
     reg          baud_done;
@@ -31,7 +28,7 @@ module uart_tx #(
             busy <= 1'b0;
         end else if (!busy) begin
             if (valid) begin
-                tx        <= 1'b0;           // start bit
+                tx        <= 1'b0;
                 shreg     <= {1'b1, data};
                 bitcnt    <= 4'd0;
                 baud      <= 0;
@@ -44,7 +41,7 @@ module uart_tx #(
         end else begin
             baud      <= 0;
             baud_done <= 1'b0;
-            if (bitcnt == 4'd9) begin        // stop bit period finished
+            if (bitcnt == 4'd9) begin
                 busy <= 1'b0;
             end else begin
                 tx     <= shreg[0];

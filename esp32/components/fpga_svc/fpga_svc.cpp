@@ -11,14 +11,12 @@
 #include "host_link.hpp"
 
 namespace FpgaSvc {
-
 namespace {
-
 const char *Tag = "fpga_svc";
 
 using FpgaLink::Space;
 
-constexpr uint16_t RegIrq = 0x0010;        // IRQ_STATUS (W1C), then IRQ_ENABLE
+constexpr uint16_t RegIrq = 0x0010;
 
 // Also checked this often without an interrupt: IRQ_ENABLE is lost whenever the FPGA is
 // configured again, and the pin floats while it isn't configured
@@ -34,10 +32,10 @@ struct Waiter {
 portMUX_TYPE Mux = portMUX_INITIALIZER_UNLOCKED;
 Waiter Waiters[WaitersMax];
 int WaiterCount;
-uint16_t Enable;                // what IRQ_ENABLE should hold
+uint16_t Enable;
 TaskHandle_t Svc;
 Stats St;
-volatile bool Rearm;            // Notify's wakeup, not the pin's
+volatile bool Rearm;
 
 // Level-triggered: the ISR masks itself and the task unmasks it once IRQ_STATUS is clear,
 // so a stuck or floating pin costs one wakeup per pass. Not an IRAM interrupt: it calls
@@ -145,7 +143,6 @@ void Start()
     gpio_isr_handler_add(Pins::FpgaIrq, Isr, nullptr);
     gpio_set_intr_type(Pins::FpgaIrq, GPIO_INTR_LOW_LEVEL);
     gpio_intr_enable(Pins::FpgaIrq);
-    // -> u32 interrupts, u32 spurious, u32 count per IRQ_STATUS bit (16)
     HostLink::Register(HostLink::Cmd::LinkIrq, [](HostLink::Args &, HostLink::Reply &reply) {
         Stats s = St;
         reply.PutU32(s.Interrupts);
@@ -165,7 +162,7 @@ void Notify(uint16_t mask, TaskHandle_t task)
     }
     taskEXIT_CRITICAL(&Mux);
     Rearm = true;
-    xTaskNotifyGive(Svc);       // IRQ_ENABLE is written on the next pass
+    xTaskNotifyGive(Svc);
 }
 
 void GetStats(Stats &s)

@@ -1,14 +1,12 @@
 #pragma once
 
-// Xbox SMBus (docs/03-esp32.md §13): a slave at 0x60 by default, a master only for the
-// length of each transfer. The console's pull-ups only; the MCPX is the other master, so
-// every transfer can fail with lost arbitration and is retried.
+// The console's SMBus. A slave at 0x60, and a master only for each transfer; the MCPX is
+// the other master, so transfers that lose arbitration are retried.
 
 #include <cstddef>
 #include <cstdint>
 
 namespace Smbus {
-
 namespace Addr {
 inline constexpr uint8_t Smc = 0x10;
 inline constexpr uint8_t Temp = 0x4C;

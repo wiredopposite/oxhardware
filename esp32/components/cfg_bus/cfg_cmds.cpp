@@ -1,12 +1,8 @@
-// fpga command group (docs/03-esp32.md §12).
-
 #include "cfg_bus.hpp"
 #include "host_link.hpp"
 
 namespace CfgBus {
-
 namespace {
-
 using HostLink::Args;
 using HostLink::Error;
 using HostLink::Reply;
@@ -20,7 +16,6 @@ bool NeedHeld(Reply &reply)
     return true;
 }
 
-// u8 CDONE, u8 held
 void Info(Args &, Reply &reply)
 {
     reply.PutU8(Cdone());
@@ -34,14 +29,12 @@ void HoldCmd(Args &, Reply &reply)
     }
 }
 
-// u32 timeout ms -> i32 us to CDONE (-1 = timed out)
 void ReleaseCmd(Args &args, Reply &reply)
 {
     uint32_t timeout = args.Remaining() ? args.U32() : 1000;
     reply.PutU32(uint32_t(int32_t(Release(timeout))));
 }
 
-// -> 3 bytes JEDEC ID
 void IdCmd(Args &, Reply &reply)
 {
     uint8_t id[3];
@@ -55,7 +48,6 @@ void IdCmd(Args &, Reply &reply)
     }
 }
 
-// u32 addr, u16 len (<= 4096) -> data
 void ReadCmd(Args &args, Reply &reply)
 {
     const uint32_t addr = args.U32();
@@ -75,7 +67,6 @@ void ReadCmd(Args &args, Reply &reply)
     }
 }
 
-// u32 addr, u32 len (4 KB multiples)
 void EraseCmd(Args &args, Reply &reply)
 {
     const uint32_t addr = args.U32();
@@ -89,7 +80,6 @@ void EraseCmd(Args &args, Reply &reply)
     }
 }
 
-// u32 addr, data (<= 4096)
 void WriteCmd(Args &args, Reply &reply)
 {
     const uint32_t addr = args.U32();
@@ -104,7 +94,6 @@ void WriteCmd(Args &args, Reply &reply)
     }
 }
 
-// u32 addr, u32 len -> u32 CRC-32
 void CrcCmd(Args &args, Reply &reply)
 {
     const uint32_t addr = args.U32();
@@ -123,7 +112,6 @@ void CrcCmd(Args &args, Reply &reply)
     }
 }
 
-// -> u8 idle pin levels, 3 bytes bit-banged JEDEC ID
 void ProbeCmd(Args &, Reply &reply)
 {
     uint8_t id[3] = {};

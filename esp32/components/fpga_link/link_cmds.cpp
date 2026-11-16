@@ -1,17 +1,12 @@
-// link command group: raw access to the FPGA's link address spaces.
-
 #include "fpga_link.hpp"
 #include "host_link.hpp"
 
 namespace FpgaLink {
-
 namespace {
-
 using HostLink::Args;
 using HostLink::Error;
 using HostLink::Reply;
 
-// u8 space (bit3 = noinc), u32 addr, u16 len -> u8 STS, data
 void ReadCmd(Args &args, Reply &reply)
 {
     const uint8_t space = args.U8();
@@ -32,7 +27,6 @@ void ReadCmd(Args &args, Reply &reply)
     reply.Put(buf, len);
 }
 
-// u8 space (bit3 = noinc), u32 addr, data -> u8 STS
 void WriteCmd(Args &args, Reply &reply)
 {
     const uint8_t space = args.U8();
@@ -51,7 +45,6 @@ void WriteCmd(Args &args, Reply &reply)
     reply.PutU8(sts);
 }
 
-// u32 Hz
 void ClockCmd(Args &args, Reply &reply)
 {
     const uint32_t hz = args.U32();
@@ -62,7 +55,6 @@ void ClockCmd(Args &args, Reply &reply)
     SetClock(int(hz));
 }
 
-// -> u8 MISO levels, u8 STS, 4 bytes ID (bit-banged)
 void ProbeCmd(Args &, Reply &reply)
 {
     uint8_t rx[6];

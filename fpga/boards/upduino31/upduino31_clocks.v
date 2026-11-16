@@ -1,22 +1,17 @@
-// UPduino v3.1 clocking: 12 MHz (pin 20, R16 "OSC" shorted) -> PLL 48 MHz (DIVQ=4)
-// or 24 MHz (DIVQ=5), synchronous reset released 2^15 clocks after PLL lock, and the ~10 kHz LFOSC
-// (runs even without the 12 MHz clock, for "no clock" indication).
-// DUAL: the PLL runs at 48 MHz, clk_2x is 48 MHz and clk_sys 24 MHz (divided in fabric).
 `default_nettype none
 
 module upduino31_clocks #(
-    parameter [2:0] DIVQ = 3'b100,  // 4: 48 MHz, 5: 24 MHz
+    parameter [2:0] DIVQ = 3'b100,  // 4: 48MHz, 5: 24MHz
     parameter       DUAL = 0
 ) (
     input  wire clk12,
     output wire clk_sys,
     output wire clk_2x,
     output wire pll_locked,
-    output wire rst,          // sync to clk_sys, active high
+    output wire rst,
     output wire clk_lf
 );
-    // 12 MHz * (DIVF+1) / (2^DIVQ * (DIVR+1)) = 768 MHz VCO / 2^DIVQ
-    // The two-output PLL can't be used: its second output takes pin 37's I/O site (LCLK).
+    // The two-output PLL can't be used: its second output takes pin 37, LCLK.
     wire pll_out;
     SB_PLL40_CORE #(
         .FEEDBACK_PATH("SIMPLE"),

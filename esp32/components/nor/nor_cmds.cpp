@@ -1,17 +1,12 @@
-// nor command group: the FPGA's flash, borrowed from the running FPGA.
-
 #include "host_link.hpp"
 #include "nor.hpp"
 
 namespace Nor {
-
 namespace {
-
 using HostLink::Args;
 using HostLink::Error;
 using HostLink::Reply;
 
-// -> u8 ready, 3 bytes JEDEC ID
 void InfoCmd(Args &, Reply &reply)
 {
     uint8_t id[3] = {};
@@ -19,7 +14,6 @@ void InfoCmd(Args &, Reply &reply)
     reply.Put(id, 3);
 }
 
-// u32 addr, u16 len (<= 4096) -> data
 void ReadCmd(Args &args, Reply &reply)
 {
     const uint32_t addr = args.U32();
@@ -37,7 +31,6 @@ void ReadCmd(Args &args, Reply &reply)
     }
 }
 
-// u32 addr, u32 len (4 KB multiples)
 void EraseCmd(Args &args, Reply &reply)
 {
     const uint32_t addr = args.U32();
@@ -51,7 +44,6 @@ void EraseCmd(Args &args, Reply &reply)
     }
 }
 
-// u32 addr, data
 void WriteCmd(Args &args, Reply &reply)
 {
     const uint32_t addr = args.U32();
@@ -66,7 +58,6 @@ void WriteCmd(Args &args, Reply &reply)
     }
 }
 
-// u32 addr, u32 len -> u32 CRC-32
 void CrcCmd(Args &args, Reply &reply)
 {
     const uint32_t addr = args.U32();

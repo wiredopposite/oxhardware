@@ -11,28 +11,24 @@
 #include "xid_map.h"
 
 namespace BtXid {
-
 namespace {
-
 const char *Tag = "bt";
 
-// Commands (oxctl bt)
-constexpr uint16_t CmdStatus = 0x0800;     // -> u8 started, u8 pairing, u8 controllers, u8 config
-constexpr uint16_t CmdPair = 0x0801;       // u8 on
-constexpr uint16_t CmdConfig = 0x0802;     // u8 on: BlueRetro's BLE configuration page
-constexpr uint16_t CmdForget = 0x0803;     // all controllers: disconnect, clear pairing keys
+constexpr uint16_t CmdStatus = 0x0800;
+constexpr uint16_t CmdPair = 0x0801;
+constexpr uint16_t CmdConfig = 0x0802;
+constexpr uint16_t CmdForget = 0x0803;
 
 // The console's pad follows one output: BlueRetro gives each controller the output of
 // its Bluetooth slot, so the first controller isn't always output 0. The pad takes the
 // first output with a controller, and the next one when that controller goes.
 constexpr int NoOutput = -1;
 
-// Home + Start held this long on any controller presses the console's power button
 constexpr uint64_t PowerComboUs = 4 * 1000 * 1000;
 
 bool Started;
-volatile int PadOutput = NoOutput;      // written by the Bluetooth tasks only
-uint32_t ComboHeld;                     // outputs holding Home + Start (Bluetooth tasks)
+volatile int PadOutput = NoOutput;
+uint32_t ComboHeld;
 esp_timer_handle_t ComboTimer;
 
 void Adopt(int index)
@@ -44,7 +40,7 @@ void Adopt(int index)
     UsbDev::SetPadPresent(index != NoOutput);
     if (index != NoOutput) {
         ESP_LOGI(Tag, "pad: controller on output %d", index);
-        Console::WakeIfOff();       // with standby power: the controller turns the console on
+        Console::WakeIfOff();
     } else {
         ESP_LOGI(Tag, "pad: no controller");
     }
@@ -56,7 +52,6 @@ void ComboExpired(void *)
     Console::Press(Console::Button::Power);
 }
 
-// The timer runs while any output holds the combo, from the first to hold it
 void Combo(uint8_t index, bool held)
 {
     const uint32_t was = ComboHeld;
@@ -85,7 +80,6 @@ void Updated(uint8_t index)
         UsbDev::SetPadState(d.output);
         return;
     }
-    // Gone: another connected controller takes the pad over, else it is unplugged
     for (int i = 0; i < WIRED_MAX_DEV; i++) {
         if (i != index && wired_adapter.data[i].connected) {
             Adopt(i);
@@ -146,7 +140,7 @@ void Start()
     // Controllers off with the console: they reconnect, and wake it, on their Home button
     Console::OnShutdown(blueretro_disconnect_all);
     UsbDev::OnRumble(Rumble);
-    UsbDev::SetPadPresent(false);      // until a controller connects
+    UsbDev::SetPadPresent(false);
     // The configuration page has no authentication: closed until asked for. Firmware
     // updates are ours, never BlueRetro's.
     blueretro_config_access(false);

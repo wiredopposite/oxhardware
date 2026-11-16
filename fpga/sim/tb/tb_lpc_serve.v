@@ -1,7 +1,3 @@
-// lpc_serve testbench: a fake MCPX issues LPC memory reads (the measured 1.6 boot pattern,
-// then sequential runs and jumps incl. mirrored addresses) against top_lpc_serve with a
-// SPI flash model holding a BIOS image at 0x40000. Every byte is checked against the
-// image. Needs build/sim/bios.hex (one byte per line, 256 KB).
 `timescale 1ns/1ps
 module tb;
     reg clk12 = 0;
@@ -14,10 +10,9 @@ module tb;
     wire       uart_tx;
     wire       f_cs, f_sck, f_mosi, f_miso;
 
-    // LAD: pulled up, driven by host or target. LFRAME#: host low or target pull-down.
     assign lad = host_oe ? host_lad : 4'bzzzz;
     pullup (lad[0]); pullup (lad[1]); pullup (lad[2]); pullup (lad[3]);
-    wire [3:0] lframe_gate;                   // target's MOSFET gate (1 = pull low)
+    wire [3:0] lframe_gate;
     assign lframe_n = (!host_frame_n || lframe_gate[0]) ? 1'b0 : 1'bz;
     pullup (lframe_n);
 
@@ -30,7 +25,7 @@ module tb;
     );
     spi_flash_model flash (.cs_n(f_cs), .sck(f_sck), .mosi(f_mosi), .miso(f_miso));
 
-    always #15 lclk = ~lclk;                  // 33.3 MHz
+    always #15 lclk = ~lclk;
 
     reg [7:0] bios [0:262143];
     integer i, reads = 0, errors = 0, timeouts = 0, waits_total = 0, wait_max = 0;
@@ -39,13 +34,13 @@ module tb;
     task mem_read(input [31:0] a);
         integer k, w; reg [3:0] s; reg [7:0] d; reg done;
         begin
-            @(posedge lclk); #5 host_frame_n = 0; host_oe = 1; host_lad = 4'h0;   // START
-            @(posedge lclk); #5 host_frame_n = 1; host_lad = 4'b0100;            // CT: mem rd
+            @(posedge lclk); #5 host_frame_n = 0; host_oe = 1; host_lad = 4'h0;
+            @(posedge lclk); #5 host_frame_n = 1; host_lad = 4'b0100;
             for (k = 7; k >= 0; k = k - 1) begin
                 @(posedge lclk); #5 host_lad = a[k*4 +: 4];
             end
-            @(posedge lclk); #5 host_lad = 4'hF;                                 // TAR1
-            @(posedge lclk); #5 host_oe = 0;                                     // TAR2
+            @(posedge lclk); #5 host_lad = 4'hF;
+            @(posedge lclk); #5 host_oe = 0;
             w = 0; done = 0;
             while (!done) begin
                 @(posedge lclk); #1;
@@ -59,11 +54,11 @@ module tb;
             if (w >= 0) begin
                 @(posedge lclk); #1 d[3:0] = lad;
                 @(posedge lclk); #1 d[7:4] = lad;
-                @(posedge lclk); #1;                                             // TAR (1111)
+                @(posedge lclk); #1;
                 if (lad !== 4'b1111) begin
                     $display("ERROR: TAR1 not 1111 (%b) after read %h", lad, a); errors = errors + 1;
                 end
-                @(posedge lclk);                                                 // TAR2
+                @(posedge lclk);
                 reads = reads + 1;
                 waits_total = waits_total + w;
                 if (w > wait_max) wait_max = w;
@@ -80,45 +75,39 @@ module tb;
             if (lframe_n !== 1'b1 && !dut.holding) begin
                 $display("ERROR: LFRAME# still low after cycle at %h", a); errors = errors + 1;
             end
-            repeat (2) @(posedge lclk);          // inter-cycle gap
+            repeat (2) @(posedge lclk);
         end
     endtask
 
-    // An I/O cycle answered by some other device (the tb plays both host and that device),
-    // with 0000 nibbles in SYNC and data: the target must not drive anything or treat them
-    // as a START.
     task io_other(input is_write, input [15:0] port, input [7:0] d);
         integer k;
         begin
-            @(posedge lclk); #5 host_frame_n = 0; host_oe = 1; host_lad = 4'h0;   // START
+            @(posedge lclk); #5 host_frame_n = 0; host_oe = 1; host_lad = 4'h0;
             @(posedge lclk); #5 host_frame_n = 1; host_lad = is_write ? 4'b0010 : 4'b0000;
             for (k = 3; k >= 0; k = k - 1) begin @(posedge lclk); #5 host_lad = port[k*4 +: 4]; end
             if (is_write) begin
                 @(posedge lclk); #5 host_lad = d[3:0];
                 @(posedge lclk); #5 host_lad = d[7:4];
             end
-            @(posedge lclk); #5 host_lad = 4'hF;                                 // TAR
             @(posedge lclk); #5 host_lad = 4'hF;
-            @(posedge lclk); #5 host_lad = 4'b0110;                              // other: wait
-            @(posedge lclk); #5 host_lad = 4'b0000;                              // other: ready
+            @(posedge lclk); #5 host_lad = 4'hF;
+            @(posedge lclk); #5 host_lad = 4'b0110;
+            @(posedge lclk); #5 host_lad = 4'b0000;
             if (!is_write) begin
                 @(posedge lclk); #5 host_lad = d[3:0];
                 @(posedge lclk); #5 host_lad = d[7:4];
             end
-            @(posedge lclk); #5 host_lad = 4'hF;                                 // TAR
+            @(posedge lclk); #5 host_lad = 4'hF;
             @(posedge lclk); #5 host_oe = 0;
             repeat (2) @(posedge lclk);
         end
     endtask
 
-    // the target must stay off the bus during other devices' cycles
     always @(posedge lclk) if (host_oe && dut.lad_oe) begin
         $display("ERROR: target drove LAD during a host/other-device phase at %0t", $time);
         errors = errors + 1;
     end
 
-    // A memory read outside the BIOS window: nobody may answer (LAD stays 1111), and the
-    // host gives up after a few clocks.
     task mem_read_ignored(input [31:0] a);
         integer k;
         begin
@@ -145,23 +134,23 @@ module tb;
         $readmemh("build/sim/bios.hex", bios);
         for (i = 0; i < 262144; i = i + 1) flash.mem[20'h40000 + i] = bios[i];
         #20_000 lrst_n = 1;
-        #6_000;                               // flash wake (tRES1) done
-        run(32'hFF000070, 8);                 // measured 1.6 boot pattern
+        #6_000;
+        run(32'hFF000070, 8);
         run(32'hFF000000, 4);
         run(32'hFF000008, 4);
-        run(32'hFF00000C, 200);               // long sequential run
-        run(32'hFFFFFFF0, 16);                // reset vector, top of the mirror
-        run(32'hFF03FFF8, 16);                // crosses the 256 KB mirror boundary
-        run(32'hFF012345, 3);                 // random jumps
+        run(32'hFF00000C, 200);
+        run(32'hFFFFFFF0, 16);
+        run(32'hFF03FFF8, 16);
+        run(32'hFF012345, 3);
         run(32'hFF001000, 3);
-        mem_read(32'hFF001002);               // short backwards jump
-        run(32'hFF001005, 2);                 // short forward skip (in reach)
-        io_other(0, 16'h002E, 8'h00);         // I/O read answered by another device, data 00
+        mem_read(32'hFF001002);
+        run(32'hFF001005, 2);
+        io_other(0, 16'h002E, 8'h00);
         mem_read(32'hFF001007);
-        io_other(1, 16'h0080, 8'h00);         // I/O write (POST code style), data 00
-        io_other(0, 16'h0000, 8'h00);         // port 0000, data 00: all-zero nibbles
+        io_other(1, 16'h0080, 8'h00);
+        io_other(0, 16'h0000, 8'h00);
         run(32'hFF001008, 4);
-        mem_read_ignored(32'h12345678);       // outside FFxxxxxx: must not be answered
+        mem_read_ignored(32'h12345678);
         run(32'hFF00100C, 2);
         $display("reads=%0d errors=%0d timeouts=%0d avg_wait=%0d max_wait=%0d clocks, LFRAME#-low samples=%0d",
                  reads, errors, timeouts, waits_total / (reads > 0 ? reads : 1), wait_max, lframe_low_seen);

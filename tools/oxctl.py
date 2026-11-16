@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenOX PC tool. Commands and options: docs/08-oxctl.md."""
+"""OpenOX PC tool. See docs/user/oxctl.md."""
 import argparse
 import os
 import struct
@@ -33,7 +33,6 @@ RESET_REASONS = ["unknown", "power-on", "external", "software", "panic", "int-wd
                  "task-wdt", "wdt", "deep-sleep", "brownout", "sdio", "usb", "jtag",
                  "efuse", "power-glitch", "cpu-lockup"]
 
-
 def cmd_sys(link, a):
     if a.what == "ping":
         data = os.urandom(32)
@@ -53,13 +52,11 @@ def cmd_sys(link, a):
         link.request(SYS_REBOOT)
         print("rebooting")
 
-
 def release(link):
     r = Reader(link.request(FPGA_RELEASE, struct.pack("<I", 1000), timeout=3))
     us = struct.unpack("<i", struct.pack("<I", r.u32()))[0]
     print(f"FPGA released: CDONE high after {us / 1000:.1f} ms" if us >= 0
           else "FPGA released: CDONE did not go high within 1 s")
-
 
 def cmd_fpga(link, a):
     if a.what == "status":
@@ -123,22 +120,17 @@ def cmd_fpga(link, a):
     finally:
         release(link)
 
-
 STS_BITS = ["NOR busy", "error", "mailbox", "iotrap", "USB", "serving", "LRESET# high", "IRQ"]
-
 
 def sts_text(sts):
     return f"STS {sts:02X}" + "".join(f" [{n}]" for i, n in enumerate(STS_BITS) if sts >> i & 1)
-
 
 def link_read(link, addr, n, space=0):
     r = link.request(LINK_READ, struct.pack("<BIH", space, addr, n))
     return r[0], r[1:]
 
-
 def link_write(link, addr, data, space=0):
     return link.request(LINK_WRITE, struct.pack("<BI", space, addr) + data)[0]
-
 
 def cmd_link(link, a):
     if a.mhz:
@@ -187,7 +179,6 @@ def cmd_link(link, a):
                 print(f"\r{i}/{a.count}", end="", flush=True)
         print(f"\r{a.count} scratch write/read passes ok in {time.time() - t0:.1f} s")
 
-
 def cmd_usb(link, a):
     if a.what == "start":
         link.request(USB_START)
@@ -226,7 +217,6 @@ def cmd_usb(link, a):
         used = [f"{d}:{x}" for d, x in enumerate(addr) if x != 0xFF]
         print("addresses (device:address)", " ".join(used) if used else "none")
 
-
 def cmd_bt(link, a):
     if a.what == "forget":
         link.request(BT_FORGET)
@@ -244,11 +234,9 @@ def cmd_bt(link, a):
             print(f"pairing {'on' if r[1] else 'off'}, {r[2]} controller(s) connected"
                   + (f", BLE config page {'on' if r[3] else 'off'}" if len(r) > 3 else ""))
 
-
 def smb_read(link, addr, reg, width=1):
     r = link.request(SMBUS_READ, bytes([addr, reg, width]))
     return r[0] if width == 1 else struct.unpack("<H", r)[0]
-
 
 def cmd_smbus(link, a):
     width = 2 if a.word else 1
@@ -261,10 +249,8 @@ def cmd_smbus(link, a):
                      + a.value.to_bytes(width, "little"))
         print("ok")
 
-
 CONSOLE_STATE, CONSOLE_PRESS = 0x0410, 0x0411
 CONSOLE_STATES = ["unknown (FPGA not answering)", "off", "reset", "running"]
-
 
 def cmd_xbox(link, a):
     if a.what == "state":
@@ -286,8 +272,6 @@ def cmd_xbox(link, a):
     link.request(SMC_POWER, bytes([{"reset": 0x01, "cycle": 0x40, "off": 0x80}[a.what]]))
     print(f"SMC: {a.what}")
 
-
-# ---------------------------------------------------------------- programmer protocol
 PROG_MAGIC = 0x5046584F
 PROG_STATUS = ["Ok", "ConsoleOn", "ProgrammerBusy", "LayoutInvalid", "NotStarted", "BadSize",
                "BadOffset", "BadCommand", "FlashError", "CrcMismatch", "NotFound", "Protected",
@@ -301,7 +285,6 @@ ROLES = ["user", "loader", "system", "diag"]
 UPLOAD_TYPES = {"user": 1, "loader": 2, "system": 3, "diag": 4}
 ROM_ENTRY = struct.Struct("<BBBBIIIHH33s")
 ROM_FLAGS = [(0x01, "current"), (0x02, "trial"), (0x04, "failed-boot"), (0x08, "user")]
-
 
 def prog(link, mode, action, payload=b"", timeout=2.0):
     cmd = (mode & 0x0F) | (action << 4)
@@ -318,29 +301,24 @@ def prog(link, mode, action, payload=b"", timeout=2.0):
         raise ProgError(status, f"prog: {name}")
     return body
 
-
 class ProgError(LinkError):
     def __init__(self, status, msg):
         super().__init__(msg)
         self.status = status
 
-
 def rom_compact(link, size):
     t0 = time.time()
     while True:
-        # Each step copies up to 512 K
         moved, left = prog(link, MODE_ROM, ROM_COMPACT, struct.pack("<I", size), timeout=60)
         if moved == 0xFF:
             break
         print(f"moved entry {moved} ({left} to go)")
     print(f"{size // 1024} K free in {time.time() - t0:.1f} s")
 
-
 def parse_size(t):
     t = t.upper()
     mul = {"K": 1024, "M": 1024 * 1024}.get(t[-1:], 1)
     return int(t.rstrip("KM"), 0) * mul
-
 
 def cmd_nor(link, a):
     if a.what == "info":
@@ -389,7 +367,6 @@ def cmd_nor(link, a):
         print(f"verified {len(data)} bytes at 0x{a.addr:06X} (CRC {crc:08X}) "
               f"in {time.time() - t0:.1f} s")
 
-
 def cmd_prog(link, a):
     if a.what == "info":
         f = struct.unpack_from("<H3B3BBBB6BBBBIII", prog(link, MODE_CONTROL, CTL_GET_INFO)
@@ -415,9 +392,7 @@ def cmd_prog(link, a):
         prog(link, MODE_CONTROL, CTL_CONFIRM)
         print("trial boot confirmed")
 
-
 CHIP_UPLOAD_TYPES = {"esp32": 5, "fpga": 6}
-
 
 def download(link, begin):
     size, crc = struct.unpack("<II", prog(link, MODE_DOWNLOAD, DOWN_BEGIN, begin))
@@ -429,7 +404,6 @@ def download(link, begin):
     if zlib.crc32(out) != crc:
         raise LinkError(f"download CRC {zlib.crc32(out):08X}, expected {crc:08X}")
     return bytes(out), crc
-
 
 def cmd_tables(link, a):
     if a.what == "upload":
@@ -453,7 +427,6 @@ def cmd_tables(link, a):
         open(a.file, "wb").write(data)
         print(f"retail tables: {len(data)} bytes to {a.file} (CRC {crc:08X})")
 
-
 def cmd_update(link, a):
     data = open(a.file, "rb").read()
     t0 = time.time()
@@ -475,15 +448,12 @@ def cmd_update(link, a):
     print(f"{a.what} updated in {time.time() - t0:.1f} s"
           + (", the ESP32 restarts" if a.what == "esp32" else ", FPGA reloaded"))
 
-
 def rom_entries(body):
     for k in range(0, len(body) - ROM_ENTRY.size + 1, ROM_ENTRY.size):
         yield ROM_ENTRY.unpack_from(body, k)
 
-
 def rom_name(raw):
     return raw.split(b"\0", 1)[0].decode(errors="replace")
-
 
 def rom_list(link):
     rows, first = [], 0
@@ -493,7 +463,6 @@ def rom_list(link):
         if len(got) < 4096 // ROM_ENTRY.size or not got:
             return rows
         first = got[-1][0] + 1
-
 
 def rom_upload(link, data, kind, name, flags, compact):
     """Uploads and commits; returns the commit reply."""
@@ -513,7 +482,6 @@ def rom_upload(link, data, kind, name, flags, compact):
             prog(link, MODE_UPLOAD, UP_WRITE, struct.pack("<I", off) + data[off:off + 4092])
             print(f"\rwritten {min(off + 4092, len(data))}/{len(data)}", end="", flush=True)
         print()
-        # Checks the CRC of the whole image in flash and saves the catalogue
         return prog(link, MODE_UPLOAD, UP_COMMIT,
                     struct.pack("<IIHBB", zlib.crc32(data), 0, 0, flags, 0), timeout=30)
     except LinkError:
@@ -523,8 +491,6 @@ def rom_upload(link, data, kind, name, flags, compact):
             pass
         raise
 
-
-# ---------------------------------------------------------------- kernel debugger
 def kd_session(link, com, a):
     """Uploads the BIOS as the power-button ROM, armed for the next boot, in place of the last
     one with its name, reboots the console into it and waits for the kernel's boot break."""
@@ -560,7 +526,6 @@ def kd_session(link, com, a):
                  "and the COM port and baud")
     print(f"==> Kernel stopped at its boot break ({stop})", flush=True)
 
-
 def cmd_kd(link, com, a):
     if a.what == "probe":
         stop = oxkd.probe(com, a.wait)
@@ -576,7 +541,6 @@ def cmd_kd(link, com, a):
         oxkd.bridge(com, a.tcp, a.traffic)
     elif a.what == "bridge":
         oxkd.bridge(com, a.tcp, a.traffic)
-
 
 def cmd_rom(link, a):
     args = a.args
@@ -639,12 +603,10 @@ def cmd_rom(link, a):
         prog(link, MODE_CONTROL, CTL_BOOT, bytes([int(args[0], 0), 1 if a.reset else 0]))
         print("armed" + (", console reset" if a.reset else " for the next reset"))
 
-
 def cmd_log(link, a):
     level = LEVELS.index(a.level)
     link.request(LOG_LEVEL, bytes([level]) + (a.tag or "").encode())
     print(f"log level {a.level} for {a.tag or 'all tags'}")
-
 
 def main():
     p = argparse.ArgumentParser(description="OpenOX PC tool")
@@ -796,7 +758,6 @@ def main():
         sys.exit(str(e))
     finally:
         link.close()
-
 
 if __name__ == "__main__":
     main()

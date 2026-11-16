@@ -1,14 +1,9 @@
 #pragma once
 
-// Config bus: the ESP32 holds the FPGA in reset (CRESET_B low) and talks to its SPI
-// flash directly (docs/01-interface.md §2.2). While not held, every config-bus pin is an
-// input so the FPGA (or a programmer on the same nets) owns the bus.
-
 #include <cstddef>
 #include <cstdint>
 
 namespace CfgBus {
-
 void Init();
 
 bool Cdone();
@@ -19,15 +14,13 @@ bool Held();
 using ResetHandler = void (*)();
 void OnReset(ResetHandler before, ResetHandler after);
 
-// Holds the FPGA in reset, takes the SPI bus and wakes the flash.
 bool Hold();
 // Releases the bus and CRESET_B; the FPGA reconfigures from flash. Returns the time to
 // CDONE high in microseconds, or -1 if it didn't rise within timeout_ms.
 int64_t Release(uint32_t timeout_ms = 1000);
 
-// Wiring check (not held): holds the FPGA in reset, returns the undriven levels of the
-// bus pins (bit0 CS, 1 SCK, 2 MOSI, 3 MISO), reads the JEDEC ID by bit-banging GPIOs,
-// then releases. Returns 0xFF if currently held.
+// Wiring check: holds the FPGA, returns the undriven levels of the bus pins (bit0 CS,
+// 1 SCK, 2 MOSI, 3 MISO) and reads the JEDEC ID by bit-banging. 0xFF if already held.
 uint8_t Probe(uint8_t id[3]);
 
 // Takes the SPI bus with the FPGA running, once its design has let go of the flash pins

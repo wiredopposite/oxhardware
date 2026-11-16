@@ -1,17 +1,15 @@
-// Prints a banner, or N 32-bit words as "II VVVVVVVV\r\n" lines, through a byte-wide
-// UART transmitter interface. Words are sampled one at a time through a registered mux.
 `default_nettype none
 
 module word_report #(
-    parameter integer N          = 16,          // words (<= 64)
+    parameter integer N          = 16,
     parameter integer BANNER_LEN = 8,
     parameter [8*BANNER_LEN-1:0] BANNER = "\015\nhello\015\n"
 ) (
     input  wire            clk,
     input  wire            rst,
-    input  wire [N*32-1:0] words,               // word i at [32*i +: 32]
-    input  wire            go_banner,           // pulse
-    input  wire            go_report,           // pulse
+    input  wire [N*32-1:0] words,
+    input  wire            go_banner,
+    input  wire            go_report,
     output reg  [7:0]      tx_data,
     output reg             tx_valid,
     input  wire            tx_ready
@@ -70,7 +68,7 @@ module word_report #(
                     if (bidx == BANNER_LEN - 1) pstate <= P_IDLE;
                     bidx <= bidx + 1'b1;
                 end
-            P_LOAD:  pstate <= P_LATCH;          // word_q follows widx
+            P_LOAD:  pstate <= P_LATCH;
             P_LATCH: begin
                 wsh <= word_q; pos <= 0; hold <= 1'b1; pstate <= P_LINE;
             end

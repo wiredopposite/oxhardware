@@ -14,11 +14,9 @@
 #include "sdkconfig.h"
 
 namespace HostLink {
-
 namespace {
-
 constexpr uart_port_t Port = UART_NUM_0;
-constexpr size_t HeaderLen = 4;               // type, seq, len
+constexpr size_t HeaderLen = 4;
 constexpr size_t CrcLen = 4;
 constexpr size_t FrameMax = HeaderLen + MaxPayload + CrcLen;
 constexpr size_t MaxCommands = 64;
@@ -34,7 +32,6 @@ SemaphoreHandle_t TxLock;
 uint8_t TxFrame[FrameMax];
 uint8_t TxEncoded[Cobs::EncodedMax(FrameMax) + 2];
 
-// Sends one frame. Payload may be given in two parts (prefix + body) to avoid copies.
 void SendFrame(FrameType type, uint8_t seq, const void *prefix, size_t prefix_len,
                const void *body, size_t body_len)
 {
@@ -77,7 +74,7 @@ Handler Find(uint16_t cmd)
     return nullptr;
 }
 
-Reply ReplyBuf;                               // used only by the receive task
+Reply ReplyBuf;
 
 void Dispatch(uint8_t *frame, size_t len)
 {

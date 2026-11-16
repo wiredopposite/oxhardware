@@ -1,43 +1,35 @@
-// ESP32 link: SPI mode 0 slave (docs/01-interface.md §3).
+// ESP32 link, SPI mode 0 slave. See docs/dev/link.md.
 //
 //   MOSI | CMD | A[23:16] | A[15:8] | A[7:0] | data ...            (write)
 //   MOSI | CMD | A[23:16] | A[15:8] | A[7:0] | dummy | 0x00 ...    (read)
 //   MISO | STS | 0x00 ...                    | 0x00  | data ...
 //
-// Bits are shifted in the SCK domain (SCK on a global buffer, CS# as asynchronous
-// reset); every complete byte is handed to the system clock domain with a toggle. For
-// reads the system domain keeps the next byte in tx_hold, which the shifter loads at the
-// following byte boundary: one byte time (400 ns at 20 MHz) is the latency budget,
-// which needs the system clock >= ~4x the byte rate (24 MHz is fine).
+// Bits are shifted on SCK with CS# as an asynchronous reset, and each byte is handed to
+// the system clock with a toggle. For reads the next byte has to be in tx_hold by the
+// following byte boundary, which needs the system clock at about 4x the byte rate.
 //
-// Bus side (clk): one-cycle wr / rd strobes with space/addr; rdata is sampled the cycle
-// after rd. Reads use one dummy byte in every space. Reads are fetched two bytes ahead of
-// the one being sent; rd_sent marks each data byte actually sent, in fetch order, so a
-// FIFO port can take back the fetches a transaction ended without sending.
+// Reads are fetched two bytes ahead of the one being sent. rd_sent marks each byte that
+// was actually sent, so a FIFO can take back fetches a transaction ended without sending.
 `default_nettype none
 
 module link_slave (
     input  wire        clk,
     input  wire        rst,
-    // SPI pins
     input  wire        sck,
     input  wire        cs_n,
     input  wire        mosi,
     output wire        miso,
     output wire        miso_oe,
-    // status byte (quasi-static, sampled in the SCK domain)
     input  wire [7:0]  sts,
-    // bus
     output reg         wr = 1'b0,
     output reg         rd = 1'b0,
     output reg  [2:0]  space = 3'd0,
     output reg  [23:0] addr = 24'd0,
     output reg  [7:0]  wdata = 8'd0,
     input  wire [7:0]  rdata,
-    output reg         rd_sent = 1'b0,      // a read data byte has been shifted out
-    output wire        idle                 // no transaction (CS# high, synchronised)
+    output reg         rd_sent = 1'b0,
+    output wire        idle
 );
-    // ------------------------------------------------------------ SCK domain
     reg [2:0] bit_cnt = 3'd0;
     reg [6:0] rx_sh = 7'd0;
     reg [7:0] rx_byte = 8'd0;
@@ -55,9 +47,9 @@ module link_slave (
         end
     end
 
-    // tx_hold is snapshotted on the same edge that completes a byte, before the system
-    // domain can react to that byte, so the timing is the same at any SCK rate.
-    reg [7:0] tx_hold = 8'd0;          // system domain, next byte to send
+    // tx_hold is taken on the edge that completes a byte, before the system clock can
+    // react to it, so the timing is the same at any SCK rate.
+    reg [7:0] tx_hold = 8'd0;
     reg [7:0] tx_next = 8'd0;
     always @(posedge sck) if (!cs_n && bit_cnt == 3'd7) tx_next <= tx_hold;
 
@@ -76,7 +68,6 @@ module link_slave (
     assign miso    = started ? tx_sh[7] : sts[7];
     assign miso_oe = !cs_n;
 
-    // ------------------------------------------------------------ system domain
     // CS# goes through one more stage than the byte toggle, so a byte that completes just
     // before CS# rises is still processed.
     reg [3:0] cs_s = 4'hF;
@@ -89,7 +80,7 @@ module link_slave (
     assign idle = !active;
     wire got    = tog_s[2] ^ tog_s[1];
 
-    reg [2:0] idx = 3'd0;              // byte index, saturates at 5
+    reg [2:0] idx = 3'd0;
     reg       is_rd = 1'b0, noinc = 1'b0, rd_pend = 1'b0;
     always @(posedge clk) begin
         wr <= 1'b0;
@@ -113,13 +104,13 @@ module link_slave (
                 3'd2: addr[15:8]  <= rx_byte;
                 3'd3: begin
                     addr[7:0] <= rx_byte;
-                    rd <= is_rd;                     // first read byte goes out after the dummy
+                    rd <= is_rd;
                 end
                 default: begin
                     if (is_rd) begin
                         if (!noinc) addr <= addr + 1'b1;
                         rd_sent <= (idx == 3'd5);
-                        rd <= 1'b1;                  // addr updates now; rd sees it next cycle
+                        rd <= 1'b1;
                     end else begin
                         wdata <= rx_byte;
                         wr <= 1'b1;

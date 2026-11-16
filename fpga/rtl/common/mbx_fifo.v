@@ -1,23 +1,16 @@
-// Dual-clock byte FIFO (one EBR at the default size) whose reads are speculative until
-// committed, for readers that fetch ahead of what they actually consume.
+// Dual-clock byte FIFO whose reads stay speculative until committed, for a reader that
+// fetches ahead of what it consumes. rd fetches the next entry, commit marks the oldest
+// fetch consumed, and rewind goes back to the last committed entry. Only committed reads
+// free space. commit and rewind must not coincide.
 //
-// Read side: rd fetches the next entry into rdata (valid the next cycle, rok = there was
-// one) and advances the read position. commit marks the oldest fetched entry consumed;
-// rewind returns the read position to the committed one, so entries fetched but never
-// consumed are read again; rd in the same cycle fetches from there. commit must not
-// coincide with rewind. flush drops everything written so far. Only committed reads free space for the
-// writer.
+// With SPEC = 0 the read side is a plain peek and pop: rd fetches the oldest entry,
+// commit removes it, rewind does nothing.
 //
-// With SPEC = 0 the read side is a plain peek/pop instead (shorter paths): rd fetches the
-// oldest entry, commit removes it, rewind is ignored. rd and commit must not coincide.
-//
-// Write side: wr is ignored while full. Levels are registered and lag the pointers by a
-// few cycles; writers and readers that space their accesses by more than that (both
-// buses here do) can trust them.
+// The levels lag the pointers by a few clocks.
 `default_nettype none
 
 module mbx_fifo #(
-    parameter integer AW   = 9,               // 2^AW entries
+    parameter integer AW   = 9,
     parameter integer SPEC = 1
 ) (
     input  wire        wclk,
@@ -45,9 +38,8 @@ module mbx_fifo #(
 
     reg [7:0] mem [0:(1<<AW)-1];
 
-    reg  [AW:0] cgray = 0;                     // committed read position, read side
+    reg  [AW:0] cgray = 0;
 
-    // ---------------------------------------------------- write side
     reg  [AW:0] wbin = 0, wgray = 0;
     reg  [AW:0] cg_s1 = 0, cg_s2 = 0, cbin_w = 0;
     reg         full = 1'b0;
@@ -64,7 +56,6 @@ module mbx_fifo #(
         wfree  <= DEPTH - (wbin - cbin_w);
     end
 
-    // ---------------------------------------------------- read side
     reg  [AW:0] wg_s1 = 0, wg_s2 = 0, wbin_r = 0;
     reg  [AW:0] spec = 0, cptr = 0;
     wire [AW:0] cptr_n = SPEC ? cptr + (commit && cptr != spec) : cptr + commit;

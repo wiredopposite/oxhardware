@@ -25,10 +25,8 @@ NAMES = {
     0x13: "reads since last reset release", 0x24: "trace frozen",
 }
 
-
 STATES = ["IDLE", "CT", "ADDR", "TAR", "SYNC", "DLO", "DHI", "TAR1", "REL",
           "SKIP1", "SKSYNC", "SKIP2", "s12", "s13", "s14", "s15"]
-
 
 def trace(port, out):
     s = serial.Serial(port, 115200, timeout=0.5)
@@ -48,7 +46,6 @@ def trace(port, out):
             f.write(f"{int(i, 16):3d}  {v & 0xF:04b}  {(v >> 4) & 1}    {(v >> 5) & 1}     "
                     f"{(v >> 6) & 1}    {(v >> 7) & 1}    {(v >> 12) & 1}   {STATES[(v >> 8) & 0xF]}\n")
     print(f"{len(rows)} samples -> {out} (trigger = first memory read outside FFxxxxxx, 64 samples before the end)")
-
 
 def main():
     if len(sys.argv) == 4 and sys.argv[2] == "--trace":
@@ -85,7 +82,6 @@ def main():
     print("Last 8 reads before the last LRESET# assertion:")
     for i in range(0x1C, 0x24):
         print(entry(i))
-
 
 if __name__ == "__main__":
     main()

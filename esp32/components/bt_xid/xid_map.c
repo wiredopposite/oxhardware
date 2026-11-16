@@ -3,10 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// BlueRetro output for the Xbox gamepad: generic controller state to the 18-byte XID
-// state (the input report after its header), and the console's rumble back to generic
-// feedback.
-
 #include <string.h>
 
 #include "blueretro.h"
@@ -32,7 +28,7 @@ enum {
 struct __packed xid_map_state {
     uint16_t buttons;
     uint8_t analog[8];
-    int16_t axes[JOY_AXES];         // LX, LY, RX, RY
+    int16_t axes[JOY_AXES];
 };
 _Static_assert(sizeof(struct xid_map_state) == 18, "XID state is 18 bytes");
 
@@ -67,7 +63,7 @@ static DRAM_ATTR const int8_t analog_btn_idx[32] = {
     -1, AN_BLACK, -1, -1,
 };
 
-static volatile uint32_t power_combo;  // per output: Home + Start held
+static volatile uint32_t power_combo;
 
 static int32_t clamp(int32_t v, const struct ctrl_meta *meta)
 {

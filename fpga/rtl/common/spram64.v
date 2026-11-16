@@ -1,6 +1,3 @@
-// 16K x 64-bit single-port RAM from the four iCE40UP5K SPRAM blocks (16K x 16 each).
-// Synchronous: write when we=1; otherwise rdata = mem[addr] one clock later.
-// Simulation (no SYNTHESIS define) uses a behavioural array.
 `default_nettype none
 
 module spram64 (

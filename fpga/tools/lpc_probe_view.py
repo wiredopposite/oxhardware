@@ -29,10 +29,8 @@ N_WORDS = 0x30
 NEVER = 0xFFFFFFFF
 MAGIC = 0x4C500001
 
-
 def ms(us):
     return "never" if us == NEVER else f"{us / 1000:9.3f} ms"
-
 
 def cycle_name(start, ct):
     if start == 0x0:
@@ -43,7 +41,6 @@ def cycle_name(start, ct):
     if start == 0xE:
         return f"FWH WR idsel={ct:X}"
     return f"START={start:X} ct={ct:X}"
-
 
 def render(w):
     out = []
@@ -74,9 +71,7 @@ def render(w):
             out.append(f"    {t / 1000:9.3f} ms  {name:<16} {a}")
     return "\n".join(out)
 
-
 CSTATE = {0: "off", 1: "capturing", 2: "done", 3: "?"}
-
 
 def render_status(v):
     lad = (v >> 12) & 0xF
@@ -85,11 +80,9 @@ def render_status(v):
             f"LFRAME#={(v >> 11) & 1} LAD={lad:04b} | state={CSTATE[(v >> 5) & 3]}"
             f"{' report-stored' if (v >> 4) & 1 else ''}")
 
-
 IOLOG_RE = re.compile(r"^([RD]) ([0-9A-F]{8}|[0-9A-F]{16})$")
 EVENTS = {1: "*** 3.3V UP (power on)", 2: "*** 3.3V DOWN (power off)",
           3: "--- LRESET# released", 4: "--- LRESET# asserted"}
-
 
 def run_iolog(ser, args):
     """lpc_iolog stream: decode records, print, and append CSV."""
@@ -130,7 +123,7 @@ def run_iolog(ser, args):
                     print(f"{rel:>21}   {EVENTS.get(code, f'event {code}')}")
                     csv.write(f"{t_abs},{'' if t_on is None else (t_abs - t_on) / 1000},EVENT,{code},,\n")
                     continue
-                if (ct >> 1) == 3:                       # memory write
+                if (ct >> 1) == 3:
                     name, addr, data, flags = "MEM WR", f"{r & 0xFFFFFF:06X}", (r >> 24) & 0xFF, ""
                 else:
                     name = {0: "IO RD", 1: "IO WR", 4: "DMA RD", 5: "DMA WR"}.get(ct >> 1, f"ct={ct:X}")
@@ -141,7 +134,6 @@ def run_iolog(ser, args):
                 print(f"{rel:>21}   {name:<8} {addr:<8} {arrow} {data:02X}  {flags}")
                 csv.write(f"{t_abs},{'' if t_on is None else (t_abs - t_on) / 1000},{name},{addr},{data:02X},{flags}\n")
             csv.flush()
-
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -188,7 +180,7 @@ def main():
         return
 
     print(f"Listening on {args.port} - power the Xbox on/off; Ctrl+C to quit. Log: {args.log}")
-    ser.write(b"\r")             # prints the last report (or the banner)
+    ser.write(b"\r")
     words = {}
     buf = b""
     try:
@@ -224,7 +216,6 @@ def main():
         pass
     finally:
         ser.close()
-
 
 if __name__ == "__main__":
     main()

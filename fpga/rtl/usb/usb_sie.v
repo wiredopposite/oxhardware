@@ -1,40 +1,31 @@
-// USB full-speed device SIE, system clock (24 MHz), docs/01-interface.md §5.9.
+// USB full-speed device SIE for up to 8 devices at their own addresses (a hub and the
+// devices behind it), with 32 endpoint slots: 0-15 IN, 16-31 OUT, and slots d and 16+d
+// are device d's EP0. A token is resolved by RAM lookups: address to device, then
+// {device, endpoint, direction} to slot, then the slot's state and IN length.
 //
-// Up to 8 logical devices share the port (hub emulation: the hub and the devices behind
-// it, each at its own address). 32 endpoint slots: 0-15 IN, 16-31 OUT; slot d and 16+d
-// are device d's EP0. A token is resolved by RAM lookups, no compares: the address map
-// (USB address -> device) as soon as the address byte is in, then the endpoint map
-// ({device, endpoint, direction} -> slot), then the slot's state and IN length.
-//
-// RAMs (link SPACE 1):
-//   IN buffers   0x000-0x3FF  write, slot k at k*64             (ESP32 -> SIE)
-//   OUT buffers  0x400-0x7FF  read,  slot 16+k at 0x400 + k*64  (SIE -> ESP32)
+// Link space 1:
+//   IN buffers   0x000-0x3FF  write, slot k at k*64
+//   OUT buffers  0x400-0x7FF  read,  slot 16+k at 0x400 + k*64
 //   SETUP        0x800-0x83F  read,  device d at 0x800 + d*8
 //   OUT length   0x840-0x84F  read,  bytes received by slot 16+k
-//   EP map       0xC00-0xCFF  write, [{dev, ep, in}] = bit7 valid, bits 3:0 slot in its half
-//   IN arm       0xD00-0xD0F  write, arm IN slot k with N bytes (0-64)
+//   EP map       0xC00-0xCFF  write, [{dev, ep, in}] = bit7 valid, bits 3:0 slot
+//   IN arm       0xD00-0xD0F  write, arm IN slot k with N bytes
 //
-// Slot state ({enable, stall, toggle, armed/full}) and the address map share a block RAM
-// owned by the engine. The ESP32's slot commands, arms and address-map writes go through
-// a queue and run while no transaction is open, so a transaction always works on state
-// nothing else changes under it. A SET_ADDRESS can be deferred: the new address is mapped
-// when that device's EP0 IN zero-length packet (the status stage) is acknowledged.
-//
-// The handshake is decided in hardware within the turnaround time; the ESP32 only fills
-// and empties buffers, so nothing it does is in that loop.
+// Slot commands, arms and address map writes from the ESP32 are queued and run only
+// between transactions. The handshake is decided here within the turnaround time, so the
+// ESP32 is never in that loop. A SET_ADDRESS is applied when the status stage's
+// zero-length IN is acknowledged.
 `default_nettype none
 
 module usb_sie (
     input  wire        clk,
     input  wire        rst,
-    // receiver (48 MHz domain)
     input  wire        ev_tog,
     input  wire [1:0]  ev_kind,
     input  wire [7:0]  ev_data,
     input  wire [2:0]  ev_flags,
     input  wire        se0_long,
     input  wire [1:0]  line,
-    // transmitter (48 MHz domain)
     output reg         b_tog = 1'b0,
     output reg  [7:0]  b_data = 8'd0,
     output reg         b_last = 1'b0,
@@ -42,22 +33,19 @@ module usb_sie (
     input  wire        b_taken,
     input  wire        tx_done,
     output wire        pu_en,
-    // link, SPACE 0 registers 0x0200-0x02FF
     input  wire        wr,
     input  wire [15:0] addr,
     input  wire [7:0]  wdata,
     output reg  [7:0]  rdata = 8'd0,
     output wire        hit,
-    // link, SPACE 1
     input  wire        b1_wr,
     input  wire [11:0] b1_addr,
     output reg  [7:0]  b1_rdata = 8'd0,
-    output reg         irq_pulse = 1'b0,    // an enabled event was just latched
+    output reg         irq_pulse = 1'b0,
     output wire        irq_level
 );
     assign hit = (addr[15:8] == 8'h02);
 
-    // ------------------------------------------------------------ crossings
     reg [2:0] ev_s = 3'd0, tk_s = 3'd0, dn_s = 3'd0;
     reg [1:0] se0_s = 2'd0, line_s0 = 2'b10, line_s = 2'b10;
     always @(posedge clk) begin
@@ -72,17 +60,15 @@ module usb_sie (
     wire taken = tk_s[2] ^ tk_s[1];
     wire txend = dn_s[2] ^ dn_s[1];
     wire in_reset = se0_s[1];
-    // ev_kind / ev_data / ev_flags are stable for 4+ clocks around the event
     wire ev_start = ev && ev_kind == 2'd0;
     wire ev_byte  = ev && ev_kind == 2'd1;
     wire ev_end   = ev && ev_kind == 2'd2;
     wire f_crc5   = ev_flags[0], f_crc16 = ev_flags[1], f_err = ev_flags[2];
 
-    // ------------------------------------------------------------ state
     reg  [1:0]  ctrl = 2'b00;               // bit0 PULLUP, bit1 SIE_EN
     assign pu_en = ctrl[0];
-    reg  [6:0]  map_a = 7'd0;               // MAP_ADDR
-    reg         p_on = 1'b0;                // a deferred address is pending
+    reg  [6:0]  map_a = 7'd0;
+    reg         p_on = 1'b0;
     reg  [2:0]  p_dev = 3'd0;
     reg  [6:0]  p_addr = 7'd0;
     reg  [7:0]  setup_dev = 8'd0;
@@ -96,10 +82,9 @@ module usb_sie (
     wire [7:0] irq_view = {|out_done, |in_done, |setup_dev, 1'b0, irq_lat};
     assign irq_level = |(irq_view & irq_en);
 
-    // ------------------------------------------------------------ RAMs
-    reg [7:0] iram [0:1023];                // IN buffers: link writes, SIE reads
-    reg [7:0] tram [0:511];                 // EP map + IN lengths: link writes, SIE reads
-    reg [7:0] oram [0:1103];                // OUT buffers, SETUP, lengths: SIE writes, link reads
+    reg [7:0] iram [0:1023];
+    reg [7:0] tram [0:511];
+    reg [7:0] oram [0:1103];
     reg [9:0]  i_ra = 10'd0;
     reg [8:0]  t_ra = 9'd0;
     reg [7:0]  i_q = 8'd0, t_q = 8'd0;
@@ -107,7 +92,7 @@ module usb_sie (
     reg [10:0] o_wa = 11'd0;
     reg [7:0]  o_wd = 8'd0;
     wire b1_iram = b1_wr && b1_addr[11:10] == 2'b00;
-    wire b1_tram = b1_wr && b1_addr[11:9] == 3'b110;            // 0xC00-0xDFF
+    wire b1_tram = b1_wr && b1_addr[11:9] == 3'b110;
     always @(posedge clk) begin
         if (b1_iram) iram[b1_addr[9:0]] <= wdata;
         if (b1_tram) tram[b1_addr[8:0]] <= wdata;
@@ -116,7 +101,7 @@ module usb_sie (
         if (o_we) oram[o_wa] <= o_wd;
         b1_rdata <= oram[{b1_addr[11], b1_addr[9:0]}];
     end
-    wire       b1_arm   = b1_wr && b1_addr[11:4] == 8'hD0;     // 0xD00-0xD0F
+    wire       b1_arm   = b1_wr && b1_addr[11:4] == 8'hD0;
 
     // 0-31 slot state: bit3 enable, bit2 stall, bit1 toggle, bit0 armed (IN) / full (OUT)
     // 128-255 address map: [128 + address] = bit3 valid, bits 2:0 device
@@ -129,13 +114,13 @@ module usb_sie (
         sr_q <= sram[sr_ra];
     end
 
-    // Command queue: {type, index, data}; type 0 slot command (0x240 + k), 1 arm,
-    // 2 address map write
+    // Command queue: {type, index, data}. Type 0 is a slot command, 1 an arm, 2 an
+    // address map write.
     (* ram_style = "block" *) reg [15:0] cq [0:255];
     reg  [7:0]  cq_wp = 8'd0, cq_rp = 8'd0;
     reg  [15:0] cq_q = 16'd0;
     reg         cq_ne = 1'b0;
-    wire        ex_go;                  // the queue's next command starts (below)
+    wire        ex_go;
     wire        l_cmd = wr && hit && addr[7:5] == 3'b010;
     wire        l_map = wr && hit && addr[7:0] == 8'h11;
     always @(posedge clk) begin
@@ -152,7 +137,6 @@ module usb_sie (
     reg  [6:0] tok_a = 7'd0;
     reg  [3:0] tok_ep = 4'd0;
 
-    // ------------------------------------------------------------ packet engine
     localparam [3:0] S_IDLE = 4'd0, S_PID = 4'd1, S_TOK1 = 4'd2, S_TOK2 = 4'd3,
                      S_TOKEND = 4'd4, S_DECIDE = 4'd5, S_DATA = 4'd6, S_DEND = 4'd7,
                      S_TX = 4'd8, S_TXW = 4'd9, S_ACKW = 4'd10, S_ACKPID = 4'd11,
@@ -164,25 +148,23 @@ module usb_sie (
     reg [3:0]  st = S_IDLE;
     reg [3:0]  pid = 4'd0;
     reg [7:0]  tok1 = 8'd0;
-    // lookup results
-    reg [2:0]  lk = 3'd0;                   // step; 0 = idle
+    reg [2:0]  lk = 3'd0;
     reg        lk_done = 1'b0, m_hit = 1'b0, m_ok = 1'b0;
     reg [2:0]  m_dev = 3'd0;
     reg [4:0]  m_slot = 5'd0;
     reg        m_en = 1'b0, m_stall = 1'b0, m_tog = 1'b0, m_full = 1'b0, m_ep0 = 1'b0;
     reg [6:0]  m_len = 7'd0;
     reg [5:0]  m_lenm1 = 6'd0;
-    // the transaction in progress
-    reg        x_setup = 1'b0, x_out = 1'b0;           // a DATA packet is expected
+    reg        x_setup = 1'b0, x_out = 1'b0;
     reg [2:0]  x_dev = 3'd0;
     reg [4:0]  x_slot = 5'd0;
     reg        x_ep0 = 1'b0, x_zlp = 1'b0, x_dtog = 1'b0, x_wok = 1'b0, x_ovf = 1'b0;
-    reg [6:0]  n = 7'd0;                    // data bytes received / pointer sent
+    reg [6:0]  n = 7'd0;
     reg [7:0]  d0 = 8'd0, d1 = 8'd0;
     reg        tx_data = 1'b0, tx_lastsent = 1'b0;
     reg [5:0]  tmo = 6'd0;
 
-    wire [6:0] wi = n - 7'd2;               // index of d1 when a byte arrives
+    wire [6:0] wi = n - 7'd2;
 
     task send(input [3:0] p, input last, input crc);
         begin
@@ -190,7 +172,7 @@ module usb_sie (
         end
     endtask
 
-    reg [7:0] ev_set;                       // events latched this cycle, for irq_pulse
+    reg [7:0] ev_set;
     reg       q_setup = 1'b0, q_out = 1'b0, q_inack = 1'b0, q_addr = 1'b0, q_reset = 1'b0;
     reg       se0_d = 1'b0, susp_d = 1'b0;
 
@@ -204,16 +186,15 @@ module usb_sie (
 
         if (ex_go) sr_ra <= {cq_q[15], cq_q[13:7]};
 
-        // -------- lookup pipeline (started by the second token byte)
         case (lk)
-            3'd1: begin                         // address map read (started at TOK1)
+            3'd1: begin
                 m_hit <= sr_q[3];
                 m_dev <= sr_q[2:0];
                 m_ep0 <= (tok_ep == 4'd0);
                 t_ra  <= {1'b0, sr_q[2:0], tok_ep, pid == P_IN};
                 lk <= 3'd2;
             end
-            3'd2: lk <= 3'd3;                   // map read
+            3'd2: lk <= 3'd3;
             3'd3: begin
                 if (m_ep0) begin
                     m_slot <= {pid != P_IN, 1'b0, m_dev};
@@ -228,7 +209,7 @@ module usb_sie (
                 end
                 lk <= 3'd4;
             end
-            3'd4: lk <= 3'd5;                   // length read
+            3'd4: lk <= 3'd5;
             3'd5: begin
                 m_len   <= t_q[6:0];
                 m_lenm1 <= t_q[5:0] - 1'b1;
@@ -240,7 +221,6 @@ module usb_sie (
             default: ;
         endcase
 
-        // -------- packets
         case (st)
             S_IDLE:
                 if (ev_start) st <= S_PID;
@@ -317,7 +297,7 @@ module usb_sie (
                             x_setup <= 1'b1;
                             x_wok   <= 1'b1;
                         end
-                        default: begin              // OUT
+                        default: begin
                             x_out <= 1'b1;
                             x_wok <= !m_stall && !m_full;
                         end
@@ -345,7 +325,7 @@ module usb_sie (
                         x_out   <= 1'b0;
                     end
                 end
-            S_DEND: begin                       // a good DATA packet: n - 2 bytes
+            S_DEND: begin
                 x_setup <= 1'b0;
                 x_out   <= 1'b0;
                 tx_data <= 1'b0;
@@ -373,7 +353,7 @@ module usb_sie (
                     end
                 end
             end
-            S_TX:                               // the PID went with send(); data bytes follow
+            S_TX:
                 if (taken) begin
                     if (!tx_data || (x_zlp && n == 7'd0) || tx_lastsent) st <= S_TXW;
                     else begin
@@ -412,10 +392,8 @@ module usb_sie (
                 if (ev_end) st <= S_IDLE;
             default: st <= S_IDLE;
         endcase
-        // a new packet always restarts the parser
         if (ev_start && st != S_IDLE && st != S_ACKW) st <= S_PID;
 
-        // -------- bus reset, suspend
         se0_d <= in_reset;
         if (in_reset && !se0_d) begin
             q_reset <= 1'b1;
@@ -435,7 +413,7 @@ module usb_sie (
         if (suspended && !susp_d) begin irq_lat[1] <= 1'b1; ev_set[1] = 1'b1; end
         if (!suspended && susp_d) begin irq_lat[2] <= 1'b1; ev_set[2] = 1'b1; end
 
-        // -------- link writes (after the engine: the ESP32's writes win)
+        // After the engine, so the ESP32's writes win
         if (wr && hit) begin
             casez (addr[7:0])
                 8'h00: ctrl <= wdata[1:0];
@@ -447,12 +425,9 @@ module usb_sie (
         irq_pulse <= |(ev_set & irq_en);
     end
 
-    // ------------------------------------------------------------ slot and device state
     wire lw    = wr && hit;
 
-    // Slot state writes: bus reset sweep, the engine's results, then queued commands,
-    // which run only while no transaction is open.
-    reg  [8:0] rs_n = 9'd0;                             // reset sweep: all 256 entries
+    reg  [8:0] rs_n = 9'd0;
     reg        setup2 = 1'b0, addr2 = 1'b0;
     reg  [1:0] ex = 2'd0;
     reg  [15:0] ex_c = 16'd0;
@@ -472,17 +447,16 @@ module usb_sie (
         if (rs_n != 9'd0) begin
             sr_we <= 1'b1; sr_wa <= rs_n[7:0] - 1'b1; sr_wd <= 4'd0;
             rs_n  <= rs_n - 1'b1;
-        end else if (q_setup || setup2) begin            // EP0 IN, then EP0 OUT
+        end else if (q_setup || setup2) begin
             sr_we <= 1'b1; sr_wa <= {3'd0, setup2, 1'b0, x_dev}; sr_wd <= 4'b0010;
         end else if (q_out || q_inack) begin
             sr_we <= 1'b1; sr_wa <= {3'd0, x_slot}; sr_wd <= {m_en, m_stall, ~m_tog, q_out};
-        end else if (addr2) begin                          // deferred SET_ADDRESS
+        end else if (addr2) begin
             sr_we <= 1'b1; sr_wa <= {1'b1, p_addr}; sr_wd <= {1'b1, p_dev};
         end else if (ex == 2'd3) begin
             sr_we <= 1'b1; sr_wa <= {ex_c[15], ex_c[13:7]}; sr_wd <= ex_new;
             ex <= 2'd0;
         end
-        // SETADDR_DEV / SETADDR_ADDR: the address to map after the status stage
         if (lw && addr[7:0] == 8'h12) p_dev <= wdata[2:0];
         if (lw && addr[7:0] == 8'h13) p_addr <= wdata[6:0];
         if (lw && addr[7:0] == 8'h10) map_a <= wdata[6:0];
@@ -492,7 +466,7 @@ module usb_sie (
             ex_c  <= cq_q;
             cq_rp <= cq_rp + 1'b1;
             ex    <= 2'd1;
-        end else if (ex == 2'd1) ex <= 2'd2;                 // sr_ra set by the engine block
+        end else if (ex == 2'd1) ex <= 2'd2;
         else if (ex == 2'd2) ex <= 2'd3;
     end
 
@@ -511,7 +485,6 @@ module usb_sie (
             if (q_setup && x_dev == i) setup_dev[i] <= 1'b1;
     end
 
-    // ------------------------------------------------------------ register reads
     always @(posedge clk) begin
         casez (addr[7:0])
             8'h00: rdata <= {6'd0, ctrl};

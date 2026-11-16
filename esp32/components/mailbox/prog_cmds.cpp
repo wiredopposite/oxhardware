@@ -1,16 +1,11 @@
-// prog command group: the programmer protocol over the PC link.
-
 #include "host_link.hpp"
 #include "prog_server.hpp"
 
 namespace ProgServer {
-
 namespace {
-
 Parser In;
 Packet Out;
 
-// One packet (header + payload) -> the reply packet
 void Xfer(HostLink::Args &args, HostLink::Reply &reply)
 {
     const size_t n = args.Remaining();

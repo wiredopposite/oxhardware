@@ -1,4 +1,4 @@
-# OpenOX programmer protocol (docs/07-console-protocol.md).
+# OpenOX programmer protocol (docs/dev/programmer-protocol.md).
 #
 #   oxprog        definitions and CRC-32, for both ends
 #   oxprogclient  the host side (console, PC tools)

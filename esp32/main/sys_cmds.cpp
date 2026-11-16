@@ -13,20 +13,16 @@
 #include "host_link.hpp"
 
 namespace SysCmds {
-
 namespace {
-
 using HostLink::Args;
 using HostLink::Reply;
 
-// Echoes its arguments.
 void Ping(Args &args, Reply &reply)
 {
     const size_t n = args.Remaining();
     reply.Put(args.Bytes(n), n);
 }
 
-// str project version, str IDF version, str build date+time, u8 chip revision (major*100+minor)
 void Version(Args &, Reply &reply)
 {
     const esp_app_desc_t *app = esp_app_get_description();
@@ -40,7 +36,6 @@ void Version(Args &, Reply &reply)
     reply.PutU16(chip.revision);
 }
 
-// u64 uptime (us), u32 free heap, u32 minimum free heap, u8 reset reason
 void Status(Args &, Reply &reply)
 {
     reply.PutU64(uint64_t(esp_timer_get_time()));
@@ -66,7 +61,6 @@ void Reboot(Args &, Reply &)
         nullptr);
 }
 
-// u8 level (esp_log_level_t), then the tag ("*" or empty = all)
 void LogLevel(Args &args, Reply &reply)
 {
     const uint8_t level = args.U8();

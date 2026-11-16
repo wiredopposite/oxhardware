@@ -11,14 +11,12 @@
 #include "freertos/semphr.h"
 
 namespace FpgaLink {
-
 namespace {
-
 const char *Tag = "fpga_link";
 
 constexpr spi_host_device_t Host = SPI3_HOST;
 int ClockHz = 10 * 1000 * 1000;
-constexpr size_t Header = 4;            // CMD + 3 address bytes
+constexpr size_t Header = 4;
 constexpr size_t MaxDummy = 4;
 constexpr size_t BufSize = Header + MaxDummy + MaxXfer;
 
@@ -78,7 +76,6 @@ void BusDown()
     spi_bus_free(Host);
 }
 
-// Mode 0, ~50 kHz
 uint8_t BangByte(uint8_t out)
 {
     uint8_t in = 0;
@@ -135,18 +132,17 @@ uint8_t Probe(uint8_t rx[6])
     uint8_t levels = 0;
     gpio_set_pull_mode(Pins::LinkMiso, GPIO_PULLUP_ONLY);
     esp_rom_delay_us(100);
-    levels |= gpio_get_level(Pins::LinkMiso) << 0;       // CS high, pulled up: 1
+    levels |= gpio_get_level(Pins::LinkMiso) << 0;
     gpio_set_pull_mode(Pins::LinkMiso, GPIO_PULLDOWN_ONLY);
     esp_rom_delay_us(100);
-    levels |= gpio_get_level(Pins::LinkMiso) << 1;       // CS high, pulled down: 0 (Hi-Z)
+    levels |= gpio_get_level(Pins::LinkMiso) << 1;
     gpio_set_pull_mode(Pins::LinkMiso, GPIO_FLOATING);
     gpio_set_level(Pins::LinkCs, 0);
     esp_rom_delay_us(100);
-    levels |= gpio_get_level(Pins::LinkMiso) << 2;       // CS low: STS bit 7
+    levels |= gpio_get_level(Pins::LinkMiso) << 2;
 
-    // read 4 bytes of space 0 from address 0: CMD, A, A, A, dummy, ID[4]
     const uint8_t hdr[5] = { 0x80, 0, 0, 0, 0 };
-    rx[0] = BangByte(hdr[0]);                             // STS
+    rx[0] = BangByte(hdr[0]);
     for (int i = 1; i < 5; i++) {
         BangByte(hdr[i]);
     }

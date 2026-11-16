@@ -1,6 +1,3 @@
-// Mailbox transport (docs/01-interface.md §5.6): moves bytes between the FPGA's console
-// port FIFOs and the protocol server.
-
 #include <cstring>
 
 #include "esp_log.h"
@@ -11,15 +8,13 @@
 #include "prog_server.hpp"
 
 namespace ProgServer {
-
 namespace {
-
 const char *Tag = "mailbox";
 
 using FpgaLink::Space;
 
-constexpr uint32_t RegCtrl = 0x0100;           // MBX_CTRL .. MBX_TX_FREE, 7 bytes
-constexpr uint32_t FifoPort = 0x01;            // SPACE 3
+constexpr uint32_t RegCtrl = 0x0100;
+constexpr uint32_t FifoPort = 0x01;
 constexpr uint8_t CtrlEnable = 0x01;
 constexpr uint8_t CtrlResetReq = 0x02;
 constexpr uint8_t CtrlReady = 0x04;
@@ -61,8 +56,6 @@ void Drain()
     SetCtrl(CtrlEnable | CtrlReady | CtrlResetReq);
 }
 
-// Sends the reply as the console makes room. False if the console reset or stopped
-// reading.
 bool Send()
 {
     size_t done = 0;
@@ -107,7 +100,7 @@ void Task(void *)
             continue;
         }
         if (!s.RxLevel) {
-            ulTaskNotifyTake(pdTRUE, IdleCheck);    // MBX_RX: data into an empty FIFO
+            ulTaskNotifyTake(pdTRUE, IdleCheck);
             continue;
         }
         const size_t n = s.RxLevel < sizeof(Rx) ? s.RxLevel : sizeof(Rx);

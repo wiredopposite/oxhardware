@@ -27,7 +27,7 @@ extern "C" void app_main(void)
     Console::Start();
     Console::RegisterCommands();
     Nor::Init();
-    ChipUpdate::Start();        // the FPGA's bitstream back if it doesn't configure
+    ChipUpdate::Start();
     Nor::RegisterCommands();
     Smbus::Init();
     Smbus::RegisterCommands();

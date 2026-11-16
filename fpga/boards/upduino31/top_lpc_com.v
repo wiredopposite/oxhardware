@@ -1,24 +1,7 @@
-// UPduino v3.1 design "lpc_com": BIOS serving, COM port, Super I/O, boot control port,
-// mailbox and the full-speed USB device.
-//
-// BIOS: every LPC memory read in FFxxxxxx from the active bank (bank_ctrl: 256 K slots
-// from flash offset 0x40000, slot 0 by default, mirrored), 1.6 LFRAME# abort through the
-// external N-MOSFET (lframe_gate, all four identical), boot hold until the read of ..74.
-// COM: 16550 registers at 0x3F8, or wherever the guest places LDN 4/5 through the
-// Super I/O at 0x2E/0x2F. Its data goes to the UART pins at a fixed 115200 8N1; the
-// guest's divisor is ignored.
-//
-// Boot control port for the Loader at 0x00E0 (bootctl_port), one-shot armed boots.
-// Mailbox: the programmer protocol's console port at 0x0B00, to the ESP32 over the link.
-// Flash: the ESP32 borrows it (flash_share) and reads, programs and erases it itself over
-// the config bus; BIOS reads meanwhile get 0xFF.
-// USB: D+/D- to the console's controller port (usb_core); 48 MHz for its line side, the
-// rest of the design on 24 MHz divided from it.
-//
-// Write the image first:  make DESIGN=lpc_com rom ROM=<file>
-// Link: ESP32 SPI slave, register space 0 (identity, scratch, LPC status, banks, IRQs,
-// flash, mailbox, USB 0x200-0x25F), SPACE 1 (USB buffers), SPACE 3 port 1 (mailbox FIFOs).
-// LED: blue = serving reads, green = idle, red = COM output, red blink = no 12 MHz clock.
+// lpc_com: the UPduino design the ESP32 runs with. BIOS serving from the active bank,
+// the COM port and Super I/O, the boot control port, the mailbox, flash sharing and the
+// USB device. COM data goes to the UART pins at a fixed 115200 8N1.
+// LED: blue serving, green idle, red COM output, red blinking without the 12MHz clock.
 `default_nettype none
 
 module top_lpc_com (
@@ -28,42 +11,37 @@ module top_lpc_com (
     output wire       led_blue,
     output wire       uart_tx,
     input  wire       uart_rx,
-    // Xbox LPC
     input  wire       lpc_clk,
     input  wire       lpc_reset_n,
-    output wire [3:0] lframe_gate,     // N-MOSFET gate drive (all four identical)
+    output wire [3:0] lframe_gate,
     inout  wire [3:0] lpc_lad,
     input  wire       v33_sense,
-    input  wire       lframe_sense,    // LFRAME# sensed directly on the bus
-    // on-board config flash (user mode after configuration)
+    input  wire       lframe_sense,
     output wire       flash_csn,
     output wire       flash_sck,
     output wire       flash_mosi,
     input  wire       flash_miso,
-    // ESP32 link
     input  wire       link_sck,
     input  wire       link_cs_n,
     input  wire       link_mosi,
     output wire       link_miso,
     output wire       fpga_irq_n,
-    // USB to the console's controller port: D+/D- through 27 R, 1.5 k from usb_pu to D+
+    // D+/D- through 27R, 1.5k from usb_pu to D+
     inout  wire       usb_dp,
     inout  wire       usb_dn,
     output wire       usb_pu
 );
-    localparam integer BAUD_DIV = 208;           // 24 MHz / 115200
+    localparam integer BAUD_DIV = 208;
 
     wire clk, clk48, pll_locked, rst, clk_lf;
-    upduino31_clocks #(.DUAL(1)) u_clk (           // 24 MHz system, 48 MHz USB line side
+    upduino31_clocks #(.DUAL(1)) u_clk (
         .clk12(clk12), .clk_sys(clk), .clk_2x(clk48), .pll_locked(pll_locked), .rst(rst),
         .clk_lf(clk_lf)
     );
 
-    // LRESET# through a glitch filter (system clock): everything below uses lreset_n
     wire lreset_n;
     lreset_filter u_lrf (.clk(clk), .lreset_n_pin(lpc_reset_n), .lreset_n(lreset_n));
 
-    // ------------------------------------------------------------ LCLK domain: LPC target
     wire [3:0]  lad_out;
     wire        lad_oe, lframe_oe, holding;
     wire        req, ack, restarted;
@@ -72,7 +50,6 @@ module top_lpc_com (
     wire        st_served, tgt_in_reset;
     wire [23:0] st_addr;
 
-    // Quasi-static settings from bank_ctrl, registered once in this domain
     wire [7:0]  lpc_ctrl, bank_base;
     wire [1:0]  bank_size;
     reg  [7:0]  base_l = 8'h04;
@@ -112,22 +89,17 @@ module top_lpc_com (
     wire f_cs_n, f_sck, f_mosi, s_req, s_ack, fs_hold, fs_grant;
     wire [7:0] s_data;
     spi_stream u_flash (
-        .clk(lpc_clk), .rst(tgt_in_reset || fs_hold),  // re-wake the flash on every boot
+        .clk(lpc_clk), .rst(tgt_in_reset || fs_hold),
         .park(1'b0), .parked(),
         .req(s_req), .req_addr(req_addr), .ack(s_ack), .ack_data(s_data),
         .restarted(restarted),
         .spi_cs_n(f_cs_n), .spi_sck(f_sck), .spi_mosi(f_mosi), .spi_miso(flash_miso)
     );
-    // spi_stream drives the flash only while the console is out of reset and the ESP32
-    // hasn't got it (CS# has a pull-up), so the ESP32 or iceprog can write it.
     wire f_float = tgt_in_reset || fs_grant;
     assign flash_csn  = f_float ? 1'bz : f_cs_n;
     assign flash_sck  = f_float ? 1'bz : f_sck;
     assign flash_mosi = f_float ? 1'bz : f_mosi;
 
-    // ------------------------------------------------------------ LCLK domain: I/O devices
-    // Port decode, registered on the last address nibble so the claim decision on the
-    // next clock starts from flip-flops.
     wire        sio_cfg, sio_active;
     wire [15:0] sio_base;
     wire [7:0]  sio_rdata, com_rdata;
@@ -150,12 +122,9 @@ module top_lpc_com (
     wire        mbx_io_hit;
     wire [7:0]  mbx_io_rdata;
     assign io_hit   = sio_hit || com_hit || bc_hit || mbx_io_hit;
-    // Every device registers its read data with its decode, so this is the only logic
-    // between those flip-flops and lpc_target.
     assign io_rdata = ({8{bc_hit}} & bc_rdata) | ({8{mbx_io_hit}} & mbx_io_rdata) |
                       ({8{sel_idx || sel_data}} & sio_rdata) | ({8{com_hit}} & com_rdata);
 
-    // Boot control port (the Loader's)
     bootctl_port u_bcp (
         .clk(lpc_clk), .en(serve_en), .base(bootctl_base), .vals(bc_vals),
         .io_addr_last(io_addr_last), .io_addr_nxt(io_addr_nxt), .io_addr(io_addr),
@@ -181,7 +150,6 @@ module top_lpc_com (
         .rx_valid(rx_valid), .rx_data(rx_byte), .rx_pop(rx_pop)
     );
 
-    // ------------------------------------------------------------ FIFOs and UART
     wire       utx_valid, utx_ready;
     wire [7:0] utx_data;
     async_fifo u_txf (
@@ -204,7 +172,6 @@ module top_lpc_com (
         .rclk(lpc_clk), .rd(rx_pop), .rdata(rx_byte), .rvalid(rx_valid)
     );
 
-    // ------------------------------------------------------------ ESP32 link
     reg serve_tog = 1'b0;
     always @(posedge lpc_clk) if (st_served) serve_tog <= ~serve_tog;
 
@@ -237,7 +204,7 @@ module top_lpc_com (
     assign link_miso  = l_miso_oe ? l_miso : 1'bz;
     assign fpga_irq_n = !irq;
 
-    // Console power: its LPC clock runs whenever it is on, also in reset
+    // LCLK runs whenever the console is on, also in reset
     wire lclk_run, lclk_chg;
     lclk_detect u_lclk (.lclk(lpc_clk), .clk(clk), .running(lclk_run), .changed(lclk_chg));
 
@@ -274,7 +241,6 @@ module top_lpc_com (
         .req(req), .ack(ack), .ack_data(ack_data),
         .s_req(s_req), .s_ack(s_ack), .s_data(s_data)
     );
-    // ------------------------------------------------------------ USB
     usb_core u_usb (
         .clk48(clk48), .clk(clk), .rst(rst),
         .dp_in(usb_dp), .dn_in(usb_dn), .dp_out(usb_dp_o), .dn_out(usb_dn_o), .oe(usb_oe),
@@ -293,7 +259,6 @@ module top_lpc_com (
                      bank_hit ? bank_rdata : mbx_hit ? mbx_rdata : fs_hit ? fs_rdata :
                      usb_hit ? usb_rdata : reg_rdata;
 
-    // ------------------------------------------------------------ LED
     reg [21:0] act = 0, com_act = 0;
     always @(posedge clk) begin
         if (served_pulse) act <= {22{1'b1}};

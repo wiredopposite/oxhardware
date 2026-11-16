@@ -1,9 +1,7 @@
 #include "crc32.hpp"
 
 namespace HostLink {
-
 namespace {
-
 struct Table {
     uint32_t v[256];
     constexpr Table() : v()

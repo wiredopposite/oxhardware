@@ -1,6 +1,6 @@
 """The console's kernel debugger (GDB RSP) on its COM port, bridge channel B.
 
-The FPGA's COM UART runs at a fixed baud whatever the guest programs (01-interface UART_DIV).
+The FPGA's COM UART runs at a fixed baud whatever the console programs.
 """
 import re
 import select
@@ -11,16 +11,13 @@ import serial
 
 STOP = re.compile(rb"\$([TS][^#]*)#")
 
-
 def rsp(body):
     return b"$" + body + b"#%02x" % (sum(body) & 0xFF)
-
 
 def open_com(port, baud):
     # DTR stays asserted: a USB UART bridge like the Debug Probe only forwards what it receives
     # while the host asserts it. A write that can't drain mustn't hang the probe.
     return serial.Serial(port, baud, timeout=0, write_timeout=0.5)
-
 
 def probe(com, wait):
     """Asks the stub why it stopped until it answers or `wait` seconds pass; returns the stop
@@ -43,12 +40,10 @@ def probe(com, wait):
             time.sleep(0.01)
     return None
 
-
 def kill(com):
     """Stopped in the debugger, the stub resets the console through the SMC."""
     com.write(b"+" + rsp(b"k"))
     com.flush()
-
 
 def bridge(com, port, verbose=False):
     """TCP on 127.0.0.1 <-> the COM port, one debugger at a time. Console output with no

@@ -1,5 +1,3 @@
-// Link register space 0 (docs/01-interface.md §5): identity, scratch and LPC status.
-// Registers outside the implemented set read 0x00 and ignore writes.
 `default_nettype none
 
 module link_regs #(
@@ -14,11 +12,10 @@ module link_regs #(
     input  wire [15:0] addr,
     input  wire [7:0]  wdata,
     output reg  [7:0]  rdata = 8'd0,
-    // LPC status (synchronised by the caller)
     input  wire        lreset_n,
-    input  wire        lclk_running,   // the console is powered
-    input  wire        served_pulse,   // one clk per served memory read
-    input  wire        armed           // a bank is armed for the next reset
+    input  wire        lclk_running,
+    input  wire        served_pulse,
+    input  wire        armed
 );
     reg [7:0]  scratch [0:3];
     reg [7:0]  reset_count = 8'd0;

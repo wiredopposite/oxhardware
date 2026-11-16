@@ -1,25 +1,5 @@
-// UPduino v3.1 design "lpc_probe": passive Xbox cold-boot timing logger.
-//
-// All LPC pins are inputs only. Connect through series resistors (00-system §4.4,
-// 04-hardware). The UPduino is powered from USB, independently of the Xbox.
-//
-// Time zero is the Xbox 3.3 V rail rising (v33_sense; must then stay up >= 1 ms to count). For the next 2^22 us (~4.2 s)
-// it records, in microseconds: first LCLK activity, up to 4 LRESET# rising edges, and
-// the first LPC cycle, plus cycle counts by type and the first 16 cycle headers with
-// timestamps. The report is printed when the window ends or the rail drops. Press
-// Enter to print it again; press 's' for a live input-status line (index 3F).
-//
-// Report format: 48 lines "II VVVVVVVV" (word index, value, hex). tools/lpc_probe_view.py
-// decodes it. Index map:
-//   00 magic 4C500001        01 power-on count       02 t first LCLK
-//   03-06 t LRESET# rise 1-4 07 LRESET# rise count    08 t first LPC cycle
-//   09 total cycles          0A mem rd  0B mem wr      0C io rd  0D io wr  0E other
-//   0F LCLK/16 edges in the last 1.024 ms
-//   10-2F records: even = {START[3:0], CT[3:0], t_us[23:0]}, odd = address
-// Timestamps that never happened read FFFFFFFF.
-//
-// LED: green blink = waiting for Xbox power, blue = capturing, green = report ready,
-//      red blink = no 12 MHz clock.
+// lpc_probe: passive cold-boot timing logger, read with tools/lpc_probe_view.py. Time
+// zero is the console's 3.3V rail rising on v33_sense.
 `default_nettype none
 
 module top_lpc_probe (
@@ -30,7 +10,6 @@ module top_lpc_probe (
     output wire       flash_csn,
     output wire       uart_tx,
     input  wire       uart_rx,
-    // Xbox LPC (inputs only)
     input  wire       lpc_clk,
     input  wire       lpc_reset_n,
     input  wire       lpc_frame_n,
@@ -40,13 +19,11 @@ module top_lpc_probe (
     assign flash_csn = 1'b1;
 
     wire clk, pll_locked, rst, clk_lf;
-    // System clock 24 MHz: plenty for 1 us timestamps and easy timing closure.
     upduino31_clocks #(.DIVQ(3'b101)) u_clk (
         .clk12(clk12), .clk_sys(clk), .pll_locked(pll_locked), .rst(rst), .clk_lf(clk_lf)
     );
-    localparam integer UART_DIV = 208;   // 24 MHz / 115200 (0.16 % error)
+    localparam integer UART_DIV = 208;
 
-    // ------------------------------------------------------------ LCLK domain
     wire [3:0]  rec_start, rec_ct;
     wire [31:0] rec_addr;
     wire        rec_toggle, lclk_div16;
@@ -56,7 +33,6 @@ module top_lpc_probe (
         .rec_toggle(rec_toggle), .lclk_div16(lclk_div16)
     );
 
-    // ------------------------------------------------------------ synchronisers
     reg [2:0] v33_sync, lrst_sync, div_sync, tog_sync;
     always @(posedge clk) begin
         v33_sync  <= {v33_sync[1:0],  v33_sense};
@@ -64,13 +40,12 @@ module top_lpc_probe (
         div_sync  <= {div_sync[1:0],  lclk_div16};
         tog_sync  <= {tog_sync[1:0],  rec_toggle};
     end
-    // 3.3 V sense: capture starts on the first raw high (time zero), but is cancelled
-    // silently unless the rail stays high for ~1 ms (see 'confirmed'). Power-off needs the
-    // filtered level (stable 1 ms) to go low. A floating/noisy input can't fake power-ons.
+    // Capture starts on the first raw high but is dropped unless the rail stays up for
+    // 1ms, so a floating input can't fake a power-on.
     localparam integer V33_STABLE_CLKS = 24000;
     wire       v33_raw = v33_sync[1];
     reg [14:0] v33_cnt = 0;
-    reg        v33     = 1'b0;          // filtered
+    reg        v33     = 1'b0;
     always @(posedge clk) begin
         if (v33_sync[1] == v33)
             v33_cnt <= 0;
@@ -83,11 +58,8 @@ module top_lpc_probe (
     wire lrst_hi  = lrst_sync[1];
     wire lrst_r   = lrst_sync[1] & ~lrst_sync[2];
     wire lclk_edg = div_sync[1] ^ div_sync[2];
-    wire rec_new  = tog_sync[1] ^ tog_sync[2];   // rec_* stable for >= 10 LCLKs
+    wire rec_new  = tog_sync[1] ^ tog_sync[2];
 
-    // ------------------------------------------------------------ live input status ('s')
-    // Free-running 1 ms tick; LCLK "running" = an LCLK/16 edge seen in the last 1 ms;
-    // v33 toggles counted per ~1 s (saturating) to spot a floating sense input.
     reg [1:0]  frame_sync;
     reg [7:0]  lad_sync;
     always @(posedge clk) begin
@@ -119,9 +91,8 @@ module top_lpc_probe (
         end
     end
 
-    // ------------------------------------------------------------ microsecond timer
     reg [5:0]  presc = 0;
-    reg        us_tick, ms_tick;  // ms_tick: every 1024 us, coincident with us_tick
+    reg        us_tick, ms_tick;
     reg [23:0] t_us;
     always @(posedge clk) begin
         us_tick <= (presc == 6'd22);
@@ -129,7 +100,6 @@ module top_lpc_probe (
         presc   <= (presc == 6'd23) ? 6'd0 : presc + 1'b1;
     end
 
-    // ------------------------------------------------------------ capture
     localparam [1:0] C_OFF = 2'd0, C_CAP = 2'd1, C_DONE = 2'd2;
     localparam [31:0] NEVER = 32'hFFFF_FFFF;
 
@@ -143,9 +113,8 @@ module top_lpc_probe (
     reg [31:0] lclk_per_ms;
     reg        lclk_seen, first_seen, lrst_full, confirmed;
     reg        have_report, report_go;
-    reg        report_req;       // latched until the printer starts the report
+    reg        report_req;
 
-    // record memory (EBR): 32 x 32
     reg [31:0] recmem [0:31];
     reg        rm_we;
     reg [4:0]  rm_waddr;
@@ -157,14 +126,12 @@ module top_lpc_probe (
         rm_rdata <= recmem[rm_raddr];
     end
 
-    reg [4:0]  rec_idx;          // next record slot (0..16)
-    reg        rec_pend;         // second word of a record still to write
+    reg [4:0]  rec_idx;
+    reg        rec_pend;
     reg [31:0] rec_addr_hold;
 
     wire [31:0] t_now = {8'd0, t_us};
 
-    // Decode each new LPC cycle into registered one-hot event flags (rec_* is stable
-    // for >= 10 LCLKs after the toggle, so one extra cycle of latency is harmless).
     reg        ev_any, ev_mrd, ev_mwr, ev_iord, ev_iowr, ev_other;
     reg [7:0]  ev_hdr;
     reg [31:0] ev_addr;
@@ -210,7 +177,6 @@ module top_lpc_probe (
             C_CAP: begin
                 if (us_tick) t_us <= t_us + 1'b1;
 
-                // LCLK activity and rate (per 1.024 ms)
                 if (ms_tick) begin
                     lclk_per_ms <= {16'd0, lclk_cnt};
                     lclk_cnt    <= lclk_edg ? 16'd1 : 16'd0;
@@ -222,7 +188,6 @@ module top_lpc_probe (
                     t_lclk    <= t_now;
                 end
 
-                // LRESET# deassertions
                 if (lrst_r) begin
                     if (!lrst_full) begin
                         case (lrst_count[1:0])
@@ -236,7 +201,6 @@ module top_lpc_probe (
                     lrst_count <= lrst_count + 1'b1;
                 end
 
-                // LPC cycles (only meaningful while LRESET# is high)
                 if (ev_mrd)   n_mrd   <= n_mrd + 1'b1;
                 if (ev_mwr)   n_mwr   <= n_mwr + 1'b1;
                 if (ev_iord)  n_iord  <= n_iord + 1'b1;
@@ -248,7 +212,7 @@ module top_lpc_probe (
                         first_seen <= 1'b1;
                         t_first    <= t_now;
                     end
-                    if (!rec_idx[4]) begin                 // first 16 records
+                    if (!rec_idx[4]) begin
                         rm_we         <= 1'b1;
                         rm_waddr      <= {rec_idx[3:0], 1'b0};
                         rm_wdata      <= {ev_hdr, t_us};
@@ -263,17 +227,15 @@ module top_lpc_probe (
                     rec_idx  <= rec_idx + 1'b1;
                 end
 
-                // rail must stay up for 1.024 ms to count as a power-on
                 if (!confirmed) begin
                     if (!v33_raw)
-                        cstate <= C_OFF;                // glitch: drop silently
+                        cstate <= C_OFF;
                     else if (t_us[10]) begin
                         confirmed   <= 1'b1;
                         power_count <= power_count + 1'b1;
                     end
                 end
 
-                // end of window or rail dropped -> report
                 if (confirmed && (t_us[22] || !v33)) begin
                     have_report <= 1'b1;
                     report_go   <= 1'b1;
@@ -281,12 +243,11 @@ module top_lpc_probe (
                 end
             end
 
-            default: if (!v33) cstate <= C_OFF;    // C_DONE
+            default: if (!v33) cstate <= C_OFF;
             endcase
         end
     end
 
-    // ------------------------------------------------------------ UART + printer
     wire [7:0] rx_data;
     wire       rx_valid;
     uart_rx #(.CLKS_PER_BIT(UART_DIV)) u_rx (
@@ -301,7 +262,6 @@ module top_lpc_probe (
     );
 
     localparam integer BANNER_LEN = 43;
-    // "\015" = CR (portable; "\r" is not a Verilog-2005 escape)
     localparam [8*BANNER_LEN-1:0] BANNER = "\015\nlpc_probe v1: waiting for Xbox power-on\015\n";
 
     localparam [2:0] P_IDLE = 3'd0, P_BANNER = 3'd1, P_LOAD = 3'd2, P_WAIT = 3'd3,
@@ -309,11 +269,11 @@ module top_lpc_probe (
     localparam [5:0] N_WORDS = 6'd48;
 
     reg [2:0]  pstate;
-    reg [5:0]  bidx;            // banner index
-    reg [5:0]  widx;            // word index
-    reg [3:0]  pos;             // char position within line (0..12)
-    reg [31:0] wsh;             // word being printed, shifted left per hex digit
-    reg [31:0] reg_word;        // registered: widx is stable through P_LOAD/P_WAIT
+    reg [5:0]  bidx;
+    reg [5:0]  widx;
+    reg [3:0]  pos;
+    reg [31:0] wsh;
+    reg [31:0] reg_word;
 
     always @(posedge clk) begin
         case (widx[3:0])
@@ -352,9 +312,6 @@ module top_lpc_probe (
         endcase
     end
 
-    // Characters leave >= 4000 cycles apart, so the next character is looked up a cycle
-    // ahead into registers (keeps the banner ROM / line mux out of the tx_data path).
-    // 'hold' skips one cycle after entering a print state so these are up to date.
     reg [7:0] banner_q, line_q;
     reg       hold;
     always @(posedge clk) begin
@@ -363,12 +320,9 @@ module top_lpc_probe (
     end
 
     wire enter  = rx_valid && (rx_data == 8'h0D);
-    wire status = rx_valid && (rx_data == 8'h73 || rx_data == 8'h53);   // 's' / 'S'
-    reg  single;                 // printing a single status line
+    wire status = rx_valid && (rx_data == 8'h73 || rx_data == 8'h53);
+    reg  single;
 
-    // Status word (index 3F): [31:24] 5A, [23:16] 3.3V-sense toggles in last ~1 s,
-    // [15:12] LAD, [11] LFRAME#, [10] LRESET#, [9] 3.3V sense raw, [8] 3.3V filtered,
-    // [7] LCLK running, [6:5] capture state, [4] report stored, [3] confirmed
     reg [31:0] status_word;
     always @(posedge clk)
         status_word <= {8'h5A, v33_tog_last, lad_sync[7:4], frame_sync[1], lrst_sync[1],
@@ -409,7 +363,7 @@ module top_lpc_probe (
                     bidx <= bidx + 1'b1;
                 end
             P_LOAD: begin
-                rm_raddr <= widx[4:0] - 5'd16;   // 16..47 -> 0..31
+                rm_raddr <= widx[4:0] - 5'd16;
                 pstate   <= P_WAIT;
             end
             P_WAIT:
@@ -440,7 +394,6 @@ module top_lpc_probe (
         end
     end
 
-    // ------------------------------------------------------------ LED
     reg [23:0] blink = 0;
     always @(posedge clk) blink <= blink + 1'b1;
     reg [12:0] lf_cnt = 0;

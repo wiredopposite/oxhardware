@@ -1,6 +1,3 @@
-// USB full-speed device: receiver and transmitter at 48 MHz, SIE at the system clock
-// (24 MHz, from the same PLL). The receiver is off while the transmitter drives the line.
-// Pins: dp_in/dn_in from the pads, dp_out/dn_out/oe to them, pu_en to the 1.5 k on D+.
 `default_nettype none
 
 module usb_core (
@@ -13,7 +10,6 @@ module usb_core (
     output wire        dn_out,
     output wire        oe,
     output wire        pu_en,
-    // link (system clock)
     input  wire        wr,
     input  wire [15:0] addr,
     input  wire [7:0]  wdata,

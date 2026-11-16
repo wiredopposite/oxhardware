@@ -1,14 +1,7 @@
-// SMSC-style Super I/O configuration space (LCLK domain), enough for the kernel to find
-// a serial port and place it.
-//
-// Index port 0x2E, data port 0x2F. Writing 0x55 to the index port enters configuration
-// mode, 0xAA leaves it. Register 0x07 selects the logical device; 0x30 and up belong to
-// it. Logical devices 4 and 5 are serial ports: active when bit 0 of 0x30 is set, at the
-// base address in 0x60 (high) / 0x61 (low). Registers 0x26/0x27 report the chip's own
-// configuration port (0x002E). Other registers read 0 and ignore writes.
-//
-// The caller decodes the ports (sel_idx = 0x2E, sel_data = 0x2F, registered) and claims
-// index-port writes always (so the enter key is seen), everything else only while cfg.
+// SMSC-style Super I/O configuration space at 0x2E/0x2F, enough for the kernel to find
+// the serial port and place it. 0x55 enters configuration mode and 0xAA leaves it.
+// Logical devices 4 and 5 are serial ports, enabled by 0x30 bit 0 at the base in
+// 0x60/0x61. Index port writes are always claimed so the enter key is seen.
 `default_nettype none
 
 module superio_cfg (
@@ -20,7 +13,6 @@ module superio_cfg (
     input  wire        wr,
     input  wire [7:0]  wdata,
     output reg  [7:0]  rdata,
-    // first active serial port (LDN 4, then 5)
     output wire        com_active,
     output wire [15:0] com_base
 );

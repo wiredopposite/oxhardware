@@ -1,8 +1,5 @@
 #pragma once
 
-// An Xbox gamepad (XID class 0x58, subclass 0x42) as its own device, the way a retail
-// controller's pad sits behind the controller's hub.
-
 #include <stdint.h>
 
 #include "usbd/usbd.h"
@@ -13,7 +10,7 @@ extern "C" {
 
 // The 20-byte input report after its two header bytes
 typedef struct __attribute__((packed)) {
-    uint8_t  buttons;           // XID_BTN_*
+    uint8_t  buttons;
     uint8_t  reserved;
     uint8_t  analog[8];         // A, B, X, Y, black, white, left trigger, right trigger
     int16_t  lx, ly, rx, ry;
@@ -21,7 +18,7 @@ typedef struct __attribute__((packed)) {
 
 // The 6-byte output report after its two header bytes
 typedef struct __attribute__((packed)) {
-    uint16_t left;              // rumble motors
+    uint16_t left;
     uint16_t right;
 } xid_out_t;
 
@@ -36,14 +33,12 @@ typedef struct __attribute__((packed)) {
 
 usbd_handle_t *xid_pad_init(void);
 void xid_pad_task(usbd_handle_t *handle);
-// From any task: the pad's state; sent when it changes
 void xid_pad_set(const xid_in_t *state);
 void xid_pad_rumble(xid_out_t *out);
-// Called from the USB task with each output report
 typedef void (*xid_pad_rumble_cb_t)(const xid_out_t *out);
 void xid_pad_on_rumble(xid_pad_rumble_cb_t cb);
-uint32_t xid_pad_reports(void);         // IN reports the host has taken
-uint32_t xid_pad_rumbles(void);         // output reports received
+uint32_t xid_pad_reports(void);
+uint32_t xid_pad_rumbles(void);
 
 #ifdef __cplusplus
 }

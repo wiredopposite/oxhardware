@@ -31,10 +31,9 @@ module spi_flash_model #(
     reg [7:0]  obyte;
     reg        out_en;
 
-    // array state
     reg        busy = 0, wel = 0, sus = 0;
     real       remain = 0, sus_t = 0;
-    integer    op = 0;                  // 1 program, 2 erase 4 K, 3 erase 64 K
+    integer    op = 0;
     reg [23:0] op_addr;
     integer    op_n;
     integer    violations = 0;
@@ -57,7 +56,7 @@ module spi_flash_model #(
                 for (k = 0; k < 4096; k = k + 1) mem[{op_addr[19:12], 12'd0} + k] = 8'hFF;
             else if (op == 3)
                 for (k = 0; k < 65536; k = k + 1) mem[{op_addr[19:16], 16'd0} + k] = 8'hFF;
-            busy = 0; op = 0; sus_t = 0;      // a suspend that came too late does nothing
+            busy = 0; op = 0; sus_t = 0;
         end
     endtask
 

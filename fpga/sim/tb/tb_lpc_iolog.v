@@ -1,12 +1,9 @@
-// iverilog smoke test for top_lpc_iolog: power-up, LRESET#, an I/O write, an I/O read
-// answered after wait states, an unanswered I/O read, a memory write and a memory read
-// (which must NOT be logged). Prints the UART stream.
 `timescale 1ns/1ps
 module tb;
     reg clk12 = 0;
     reg lclk = 0, lrst_n = 0, lframe_n = 1, v33 = 0, lclk_en = 0;
-    reg [3:0] lad_h = 4'hF;     // host drive
-    reg [3:0] lad_t = 4'hF;     // target drive
+    reg [3:0] lad_h = 4'hF;
+    reg [3:0] lad_t = 4'hF;
     reg       t_en = 0;
     wire [3:0] lad = t_en ? lad_t : lad_h;
     wire uart_tx;
@@ -32,9 +29,9 @@ module tb;
             hdr(ct, addr, nib);
             @(negedge lclk); lad_h = d[3:0];
             @(negedge lclk); lad_h = d[7:4];
-            @(negedge lclk); lad_h = 4'hF;                        // TAR
+            @(negedge lclk); lad_h = 4'hF;
             @(negedge lclk);
-            @(negedge lclk); t_en = 1; lad_t = 4'h0;              // SYNC ok
+            @(negedge lclk); t_en = 1; lad_t = 4'h0;
             @(negedge lclk); lad_t = 4'hF;
             @(negedge lclk); t_en = 0;
             repeat (3) @(negedge lclk);
@@ -45,7 +42,7 @@ module tb;
         integer i;
         begin
             hdr(ct, addr, nib);
-            @(negedge lclk); lad_h = 4'hF;                        // TAR
+            @(negedge lclk); lad_h = 4'hF;
             @(negedge lclk);
             if (answer) begin
                 t_en = 1;
@@ -56,7 +53,7 @@ module tb;
                 @(negedge lclk); lad_t = 4'hF;
                 @(negedge lclk); t_en = 0;
             end else
-                repeat (6) @(negedge lclk);                       // floats 1111, host gives up
+                repeat (6) @(negedge lclk);
             repeat (3) @(negedge lclk);
         end
     endtask
@@ -76,13 +73,13 @@ module tb;
         #500_000;
         v33 = 1;
         #50_000  lclk_en = 1;
-        #1_200_000 lrst_n = 1;                        // after the 1 ms power filter
+        #1_200_000 lrst_n = 1;
         #5_000;
-        rd(4'b0100, 32'hFF000070, 8, 8'h11, 2, 1);    // mem read: must be filtered out
-        wr(4'b0010, 32'h000000EF, 4, 8'h5A);          // I/O write 0xEF <- 5A
-        rd(4'b0000, 32'h000000EF, 4, 8'h3C, 3, 1);    // I/O read 0xEF -> 3C after 3 waits
-        rd(4'b0000, 32'h000000EE, 4, 8'h00, 0, 0);    // I/O read 0xEE, nobody answers
-        wr(4'b0110, 32'hFFF05555, 8, 8'hAA);          // memory write (flash unlock style)
+        rd(4'b0100, 32'hFF000070, 8, 8'h11, 2, 1);
+        wr(4'b0010, 32'h000000EF, 4, 8'h5A);
+        rd(4'b0000, 32'h000000EF, 4, 8'h3C, 3, 1);
+        rd(4'b0000, 32'h000000EE, 4, 8'h00, 0, 0);
+        wr(4'b0110, 32'hFFF05555, 8, 8'hAA);
         #20_000 lrst_n = 0;
         #5_000_000;
         $finish;

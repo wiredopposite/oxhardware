@@ -14,9 +14,7 @@
 #include "xid_pad.h"
 
 namespace UsbDev {
-
 namespace {
-
 using FpgaLink::Space;
 
 const char *Tag = "usb";
@@ -26,16 +24,14 @@ constexpr uint16_t FeatureUsb = 1u << 4;
 constexpr uint32_t RegUsbCtrl = 0x0200;     // bit1 SIE_EN: 0 after the FPGA is reloaded
 constexpr uint8_t UsbSieEn = 0x02;
 
-// Commands (oxctl usb)
 constexpr uint16_t CmdStart = 0x0700;
 constexpr uint16_t CmdStop = 0x0701;
 constexpr uint16_t CmdStatus = 0x0702;
-constexpr uint16_t CmdPlug = 0x0703;       // u8 plugged: the gamepad on hub port 1
-constexpr uint16_t CmdPad = 0x0704;        // xid_in_t: the gamepad's state
+constexpr uint16_t CmdPlug = 0x0703;
+constexpr uint16_t CmdPad = 0x0704;
 
 // Without an interrupt the task still looks this often: the functions have timed work
 constexpr TickType_t IdleTicks = pdMS_TO_TICKS(2);
-// Polls per wakeup at most, while events keep coming
 constexpr int Burst = 16;
 // Wanted but not running (the FPGA not ready yet): retried this often. Running: the
 // FPGA's USB is checked as often, to start again after it was reloaded.
@@ -43,14 +39,14 @@ constexpr TickType_t RetryTicks = pdMS_TO_TICKS(1000);
 // Before the FPGA is reset: unplugged this long first, so the console has seen the
 // disconnect before the FPGA's pins float
 constexpr TickType_t UnplugTicks = pdMS_TO_TICKS(200);
-constexpr uint8_t HubPorts = 3;         // a controller: pad, two MU slots
+constexpr uint8_t HubPorts = 3;
 constexpr uint8_t PadPort = 1;
 
 TaskHandle_t Task;
-volatile bool Wanted, Running;      // Wanted: from Start() until oxctl usb stop
-volatile bool Paused;               // the FPGA is being reset
+volatile bool Wanted, Running;
+volatile bool Paused;
 volatile int8_t PlugReq = -1;       // -1 none, 0 unplug, 1 plug
-volatile bool PadPresent = true;    // the pad is plugged in at start
+volatile bool PadPresent = true;
 usbd_handle_t *Hub, *Pad;
 
 bool HasUsb()
@@ -60,7 +56,6 @@ bool HasUsb()
            (f[0] | f[1] << 8) & FeatureUsb;
 }
 
-// The FPGA's USB still has what Attach() gave it
 bool UsbAlive()
 {
     uint8_t c;
@@ -212,7 +207,6 @@ void OnRumble(RumbleHandler handler)
 
 void RegisterCommands()
 {
-    // After oxctl usb stop: attach again
     HostLink::Register(CmdStart, [](HostLink::Args &, HostLink::Reply &reply) {
         if (!HasUsb()) {
             reply.Fail(HostLink::Error::Failed, "FPGA design has no USB");
@@ -226,7 +220,6 @@ void RegisterCommands()
             reply.Fail(HostLink::Error::Failed, "attach failed");
         }
     });
-    // Detached until oxctl usb start or the next boot
     HostLink::Register(CmdStop, [](HostLink::Args &, HostLink::Reply &) {
         Wanted = false;
         if (Task != nullptr) {
@@ -236,7 +229,6 @@ void RegisterCommands()
             }
         }
     });
-    // u8 plugged: the gamepad on hub port 1
     HostLink::Register(CmdPlug, [](HostLink::Args &args, HostLink::Reply &reply) {
         const uint8_t plugged = args.U8();
         if (args.Bad() || plugged > 1) {
@@ -253,7 +245,6 @@ void RegisterCommands()
             vTaskDelay(pdMS_TO_TICKS(2));
         }
     });
-    // xid_in_t (18 bytes) -> xid_out_t (4 bytes, the last rumble), u32 rumble reports
     HostLink::Register(CmdPad, [](HostLink::Args &args, HostLink::Reply &reply) {
         xid_in_t in;
         const uint8_t *p = args.Bytes(sizeof(in));
@@ -273,8 +264,6 @@ void RegisterCommands()
         reply.Put(reinterpret_cast<const uint8_t *>(&out), sizeof(out));
         reply.PutU32(xid_pad_rumbles());
     });
-    // -> u8 running, u8 gamepad state, u32 reports, u32 rumble reports, u32 x7 driver
-    //    counts, u8 x8 device addresses, u8 hub state
     HostLink::Register(CmdStatus, [](HostLink::Args &, HostLink::Reply &reply) {
         dcd_fpga_stats_t s;
         dcd_fpga_get_stats(&s);

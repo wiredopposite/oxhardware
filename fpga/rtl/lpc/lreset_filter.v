@@ -1,6 +1,5 @@
-// LRESET# glitch filter: the output follows the pin only after it has held a new level
-// for STABLE consecutive clocks. Runs on a free-running clock (LCLK may stop in reset).
-// Real resets last milliseconds; at 24 MHz the default 32 clocks ignore pulses < 1.3 us.
+// LRESET# follows the pin once it has held a new level for STABLE clocks. Runs on a
+// free-running clock, since LCLK can stop in reset.
 `default_nettype none
 
 module lreset_filter #(

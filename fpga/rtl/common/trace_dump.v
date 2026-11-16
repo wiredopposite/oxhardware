@@ -1,12 +1,10 @@
-// Prints a trace_buf as 512 lines "III VVVV\r\n" (index from oldest, sample) through a
-// byte-wide UART transmitter interface. 'go' starts a dump; 'busy' is high until done.
 `default_nettype none
 
 module trace_dump (
     input  wire        clk,
     input  wire        rst,
     input  wire        go,
-    input  wire [8:0]  oldest,           // trace_buf.wp (frozen)
+    input  wire [8:0]  oldest,
     output reg  [8:0]  raddr,
     input  wire [15:0] rdata,
     output reg         busy,
@@ -14,10 +12,10 @@ module trace_dump (
     output reg         tx_valid,
     input  wire        tx_ready
 );
-    reg [9:0]  idx;                      // 0..511, 512 = done
-    reg [3:0]  pos;                      // 0..9
+    reg [9:0]  idx;
+    reg [3:0]  pos;
     reg [15:0] val;
-    reg [1:0]  ph;                       // 0 = load, 1 = wait, 2 = latch, 3 = print
+    reg [1:0]  ph;
     reg [7:0]  ch_q;
     reg        hold;
 

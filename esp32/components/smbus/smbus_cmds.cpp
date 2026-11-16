@@ -1,17 +1,12 @@
-// smbus command group.
-
 #include "host_link.hpp"
 #include "smbus.hpp"
 
 namespace Smbus {
-
 namespace {
-
 using HostLink::Args;
 using HostLink::Error;
 using HostLink::Reply;
 
-// u8 addr, u8 reg, u8 width (1/2) -> value (width bytes)
 void ReadCmd(Args &args, Reply &reply)
 {
     const uint8_t addr = args.U8();
@@ -37,7 +32,6 @@ void ReadCmd(Args &args, Reply &reply)
     }
 }
 
-// u8 addr, u8 reg, u8 width (1/2), value (width bytes)
 void WriteCmd(Args &args, Reply &reply)
 {
     const uint8_t addr = args.U8();
@@ -54,7 +48,6 @@ void WriteCmd(Args &args, Reply &reply)
     }
 }
 
-// u8 action (Power)
 void PowerCmd(Args &args, Reply &reply)
 {
     const uint8_t a = args.U8();

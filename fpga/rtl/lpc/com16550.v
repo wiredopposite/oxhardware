@@ -1,32 +1,24 @@
-// 16550-compatible COM port registers (LCLK domain), guest side only.
+// 16550 registers for the console side of the COM port. The divisor is kept but unused,
+// since the UART runs at a fixed baud. LSR only shows THRE while the TX FIFO has room, so
+// a polled sender waits instead of losing bytes. No interrupts.
 //
-// The guest's divisor is stored and read back but never used: the physical baud is
-// fixed elsewhere. LSR reports THRE|TEMT only while the TX FIFO has room, so a polled
-// sender waits instead of losing bytes. No interrupts (IIR always "none pending").
-//
-// Bytes written to THR go to tx_*; RBR reads the head of the RX FIFO (rx_*), popping it.
-// Read data is registered when the caller decodes the address (sample, with the register
-// it will read), and RBR pops only if that snapshot held a byte.
-// Reset (in_reset) restores register defaults and drains the RX FIFO; the TX FIFO keeps
-// draining to the UART so the last output before a reboot isn't lost.
+// Reset clears the registers and drains RX, but TX keeps draining so the last output
+// before a reboot isn't lost.
 `default_nettype none
 
 module com16550 (
     input  wire       clk,
     input  wire       in_reset,
-    // register access (decoded by the caller)
     input  wire [2:0] reg_a,
-    input  wire       sample,             // register rdata for sample_a now
+    input  wire       sample,
     input  wire [2:0] sample_a,
     input  wire       rd,
     input  wire       wr,
     input  wire [7:0] wdata,
     output reg  [7:0] rdata = 8'h00,
-    // TX FIFO (guest -> UART)
     output reg        tx_push,
     output reg  [7:0] tx_data,
     input  wire       tx_full,
-    // RX FIFO (UART -> guest), first-word-fall-through
     input  wire       rx_valid,
     input  wire [7:0] rx_data,
     output wire       rx_pop
@@ -35,10 +27,10 @@ module com16550 (
     reg [3:0] ier = 4'h0;
     reg [4:0] mcr = 5'h00;
     reg       fifo_en = 1'b0;
-    reg       flush = 1'b0;               // draining RX (reset or FCR bit 1)
+    reg       flush = 1'b0;
     wire      dlab = lcr[7];
 
-    reg rbr_ok = 1'b0;                    // the sampled RBR read holds a byte
+    reg rbr_ok = 1'b0;                    // RBR only pops if the sampled read had a byte
     always @(posedge clk) if (sample) begin
         rbr_ok <= sample_a == 3'd0 && !dlab && rx_valid && !flush;
         case (sample_a)

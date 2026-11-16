@@ -1,7 +1,7 @@
 /*
- * The programmer protocol's client for C and anything that binds to C
- * (docs/07-console-protocol.md): the same calls as OxProg::Client, over a
- * transport given as callbacks. Link oxprogc.
+ * The programmer protocol's client for C and anything that binds to C: the
+ * same calls as OxProg::Client, over a transport given as callbacks. Link
+ * oxprogc.
  *
  * Every call returns an oxprog_status_t: OXPROG_OK, a status from the chip,
  * or OXPROG_TIMEOUT / OXPROG_TRANSPORT_ERROR from the client. Commands are sent
@@ -32,7 +32,6 @@ extern "C" {
 #define OXPROG_NAME_MAX 32
 #define OXPROG_NO_ENTRY 0xFF
 
-/* Status */
 typedef uint8_t oxprog_status_t;
 enum {
     OXPROG_OK = 0,
@@ -55,7 +54,6 @@ enum {
     OXPROG_TRANSPORT_ERROR = 0xFF
 };
 
-/* What a ROM is for */
 enum {
     OXPROG_ROLE_USER = 0,
     OXPROG_ROLE_LOADER,
@@ -63,7 +61,6 @@ enum {
     OXPROG_ROLE_DIAG
 };
 
-/* Upload types */
 enum {
     OXPROG_UPLOAD_RETAIL_TABLES = 0,
     OXPROG_UPLOAD_USER_ROM,
@@ -74,28 +71,23 @@ enum {
     OXPROG_UPLOAD_FPGA_BITSTREAM    /* the FPGA reloads during the commit */
 };
 
-/* Download types */
 enum {
     OXPROG_DOWNLOAD_RETAIL_TABLES = 0,
-    OXPROG_DOWNLOAD_ROM,            /* a catalogue entry */
-    OXPROG_DOWNLOAD_ACTIVE_ROM      /* what the console is being served */
+    OXPROG_DOWNLOAD_ROM,
+    OXPROG_DOWNLOAD_ACTIVE_ROM
 };
 
-/* oxprog_upload_options_t.flags */
 #define OXPROG_COMMIT_TRIAL 0x01    /* Loader, System: current only once it confirms */
 #define OXPROG_COMMIT_USER  0x02    /* user ROM: make it the power-button ROM */
 #define OXPROG_COMMIT_BOOT  0x04    /* boot it from the console's next reset */
 
-/* oxprog_rom_entry_t.flags */
 #define OXPROG_ROM_CURRENT     0x01
 #define OXPROG_ROM_TRIAL       0x02
 #define OXPROG_ROM_FAILED_BOOT 0x04
 #define OXPROG_ROM_USER        0x08
 
-/* oxprog_boot() flags */
 #define OXPROG_BOOT_RESET 0x01      /* reset the console through the SMC once armed */
 
-/* oxprog_info_t.boot_flags: the FPGA's BOOT_FLAGS */
 #define OXPROG_FPGA_ARMED      0x01
 #define OXPROG_FPGA_ARMED_BOOT 0x02
 #define OXPROG_FPGA_TRIAL      0x04
@@ -105,13 +97,12 @@ enum {
 #pragma pack(push, 1)
 
 typedef struct {
-    uint16_t version;               /* protocol version */
+    uint16_t version;
     uint8_t  firmware_version[3];
     uint8_t  fpga_version[3];
     uint8_t  board_id;
     uint8_t  console_powered;
     uint8_t  boot_flags;
-    /* catalogue entries, OXPROG_NO_ENTRY for none */
     uint8_t  active_entry;
     uint8_t  armed_entry;
     uint8_t  user_entry;
@@ -145,7 +136,7 @@ typedef struct {
     char     name[OXPROG_NAME_MAX + 1];
     uint16_t version;
     uint32_t source_crc32;
-    uint8_t  flags;                 /* OXPROG_COMMIT_* */
+    uint8_t  flags;
     uint8_t  force;                 /* write with the console running another BIOS */
 } oxprog_upload_options_t;
 
@@ -179,11 +170,9 @@ OXPROG_API oxprog_status_t oxprog_smbus_read(oxprog_client_t *client, uint8_t ad
                                              uint8_t command, uint8_t *value);
 OXPROG_API oxprog_status_t oxprog_smbus_write(oxprog_client_t *client, uint8_t address,
                                               uint8_t command, uint8_t value);
-/* Arms an entry for the console's next boot; OXPROG_BOOT_RESET also resets it */
 OXPROG_API oxprog_status_t oxprog_boot(oxprog_client_t *client, uint8_t entry, uint8_t flags);
 OXPROG_API oxprog_status_t oxprog_confirm_boot(oxprog_client_t *client);
 
-/* The whole catalogue: up to max entries into out, *count the number stored */
 OXPROG_API oxprog_status_t oxprog_list_roms(oxprog_client_t *client, oxprog_rom_entry_t *out,
                                             size_t max, size_t *count);
 OXPROG_API oxprog_status_t oxprog_get_rom(oxprog_client_t *client, uint8_t entry,
@@ -191,9 +180,7 @@ OXPROG_API oxprog_status_t oxprog_get_rom(oxprog_client_t *client, uint8_t entry
 OXPROG_API oxprog_status_t oxprog_delete_rom(oxprog_client_t *client, uint8_t entry);
 OXPROG_API oxprog_status_t oxprog_rename_rom(oxprog_client_t *client, uint8_t entry,
                                              const char *name);
-/* OXPROG_NO_ENTRY for none */
 OXPROG_API oxprog_status_t oxprog_set_user_rom(oxprog_client_t *client, uint8_t entry);
-/* Moves entries until a run of image_size is free (after OXPROG_FRAGMENTED) */
 OXPROG_API oxprog_status_t oxprog_compact_roms(oxprog_client_t *client, uint32_t image_size);
 
 /*

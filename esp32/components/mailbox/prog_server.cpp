@@ -13,11 +13,9 @@
 #include "smbus.hpp"
 
 namespace ProgServer {
-
 using namespace OxProg;
 
 namespace {
-
 constexpr size_t HeaderSize = sizeof(Header);
 
 SemaphoreHandle_t Lock = xSemaphoreCreateMutex();   // C++ constructors run after the heap is up
@@ -28,7 +26,6 @@ bool HeaderValid(const Header &h)
            h.HeaderCrc32 == Crc32(&h, offsetof(Header, HeaderCrc32));
 }
 
-// ------------------------------------------------------------ replies
 class Out {
 public:
     explicit Out(Packet &p) : P(p) {}
@@ -61,7 +58,6 @@ void RebootTask(void *)
     esp_restart();
 }
 
-// ------------------------------------------------------------ Control
 Status GetInfo(Out &out)
 {
     Info &i = out.As<Info>();
@@ -128,7 +124,6 @@ Status Control(const Parser &in, Out &out)
 
 }
 
-// ------------------------------------------------------------ Parser
 bool Parser::MagicPrefix() const
 {
     for (size_t i = 0; i < Have && i < 4; i++) {
@@ -141,7 +136,6 @@ bool Parser::MagicPrefix() const
 
 void Parser::Shift()
 {
-    // Header rejected: look for the next magic from byte 1 on
     size_t k = 1;
     while (k < Have && Buf[k] != uint8_t(Magic)) {
         k++;
@@ -165,7 +159,6 @@ size_t Parser::Feed(const uint8_t *data, size_t len)
                     Shift();
                 }
             }
-            // keep only bytes that can still start a header
             while (Have > 0 && !HdrOk && !MagicPrefix()) {
                 Shift();
             }
@@ -181,7 +174,6 @@ size_t Parser::Feed(const uint8_t *data, size_t len)
     return used;
 }
 
-// ------------------------------------------------------------ dispatch
 void Handle(const Parser &in, Packet &reply)
 {
     xSemaphoreTake(Lock, portMAX_DELAY);

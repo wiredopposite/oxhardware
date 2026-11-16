@@ -17,8 +17,8 @@ extern "C" {
 
 // Before any device behind it; ep0_size 8 or 64
 usbd_handle_t *hub_init(uint8_t ports, uint8_t ep0_size);
-bool hub_attach(uint8_t port, usbd_handle_t *dev);     // port 1..ports
-usbd_handle_t *hub_detach(uint8_t port);                // the device unplugged, or NULL
+bool hub_attach(uint8_t port, usbd_handle_t *dev);
+usbd_handle_t *hub_detach(uint8_t port);
 void hub_task(usbd_handle_t *handle);
 
 #ifdef __cplusplus

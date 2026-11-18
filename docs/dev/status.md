@@ -11,6 +11,7 @@ What works today is on the bench: a UPduino v3.1 and an ESP32-PICO-DevKitM-2 on 
 - [x] USB: a hub and an Xbox gamepad on the controller port, driven by Bluetooth controllers
 - [x] SMBus, the console's buttons and power state
 - [x] Updating the bitstream and firmware with the console running
+- [x] Long uptimes: the heap holds steady through Bluetooth reconnects, console power cycles, uploads and USB unplugs (`oxctl sys heap`, `sys trace`)
 
 ## Gateware
 

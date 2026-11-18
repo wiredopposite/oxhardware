@@ -64,3 +64,5 @@ Needs Python 3 and `pyserial` (`pip install pyserial`). See [oxctl](../user/oxct
 `openoxfw.code-workspace` opens `fpga/` and `esp32/` as separate folders: the ESP-IDF extension and clangd from esp-clang for the firmware, and OSS CAD Suite on the terminal's `PATH` for the gateware. For that, set an `OSS_CAD_SUITE` environment variable to where OSS CAD Suite is installed, then restart VS Code.
 
 In the `fpga` folder, Run Task has the `make` targets above: Build (Ctrl+Shift+B), Build and program, Write BIOS image, Simulate, Simulate USB and Clean.
+
+In the `esp32` folder, Run Task has Build (Ctrl+Shift+B) and Flash, which asks for the ESP32's port. Both set up ESP-IDF's environment from `thirdparty/esp-idf` first. Nothing else can have the port open while it flashes.

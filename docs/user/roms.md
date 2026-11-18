@@ -22,7 +22,7 @@ The Loader, System and Diag only change through updates. Console software can't 
 | Power | The power-button ROM, one of your user ROMs. System if there's none |
 | Eject | System |
 
-Eject always reaches System, whatever is in the user slots. If a ROM fails to boot, the next boot goes to System, which shows which one failed.
+Eject always reaches System, whatever is in the user slots. If a ROM fails to boot, the next boot goes to System, once. `rom list` marks the one that failed `failed-boot`.
 
 A ROM can also be booted once on its own, from the boot menu or `oxctl rom boot`. The boot after that goes back to the Loader.
 
@@ -46,6 +46,6 @@ If there's room in total but no free run of slots the right size, the upload fai
 
 ## Updates
 
-Loader and System updates boot once on trial. They only replace the old ones after they've started and confirmed. If one doesn't, the next boot lands on the old one. See [Boot flow](../dev/boot-flow.md#trial-updates).
+Loader and System updates boot once on trial. They only replace the old ones after they've started and confirmed. If one doesn't, or the console is turned off before it does, the next boot lands on the old one. Each role keeps its current ROM and one spare: a new update replaces the spare, and the one it replaces becomes the spare once it's confirmed. See [Boot flow](../dev/boot-flow.md#trial-updates).
 
 The FPGA's bitstream and the ESP32's firmware are updated with `oxctl update`, with the console running.

@@ -11,7 +11,7 @@ How the device decides what the Xbox boots: the ROM roles, the Loader's decision
 | **Diag** | RAM and hardware test, booted on command | 256KB | 1 | Update packages only |
 | **User** | Users' own ROMs | 256KB / 512KB / 1MB | the rest | `oxctl`, the System UI |
 
-`rom_mgr` refuses to write the current Loader, System and Diag outside an update, and the console can't erase or program them. Which slots hold which role is kept in the [catalogue](esp32.md#rom-library). The FPGA only needs the banks, which the ESP32 sets from it.
+A role keeps its current image and one spare. A Loader or System upload goes into the spare, replacing what was there, and a Diag upload replaces the Diag, so the library never fills up with old ones. `rom_mgr` refuses to write the current Loader, System and Diag outside an update, and the console can't erase or program them. Which slots hold which role is kept in the [catalogue](esp32.md#rom-library). The FPGA only needs the banks, which the ESP32 sets from it.
 
 ## Switching banks means a reset
 
@@ -26,7 +26,7 @@ The Loader, System and Diag run on the Xbox CPU and reach the SMC through the MC
 
 | Register | Meaning |
 |---|---|
-| `DEFAULT_BANK` | Served after any reset with nothing armed: the confirmed Loader. Slot 0 until the ESP32 sets it. |
+| `DEFAULT_BANK` | Served after any reset with nothing armed: the confirmed Loader, or the current System while there's no Loader. Slot 0 until the ESP32 sets it. |
 | `PENDING_BANK` + `ARM_AT_RESET` | Served for **one** boot: at the next `LRESET#` assertion it becomes `ACTIVE_BANK` and the arm clears. |
 | `ACTIVE_BANK` | What is being served now. |
 
@@ -77,7 +77,7 @@ A BIOS on a flash chip reboots into itself, and some rely on it: one can reset o
 
 The console goes back to the Loader once `LRESET#` has been held for 3s, meaning it's really off: the ESP32 drops the arm and sets `ACTIVE_BANK` to `DEFAULT_BANK`, since the next power-on has no reset edge to pick that up. An arm for a different bank (the Loader's, System's `Boot`, `oxctl rom boot`) also ends it, and that boot is kept in turn.
 
-A boot that was already running when the ESP32 started is picked up the same way.
+A boot that was already running when the ESP32 started is picked up the same way. So is a trial System from the moment it confirms: the FPGA's `TRIAL` stays set for the rest of that boot, but once it's confirmed it's kept like any other, and a reset it does itself (the dual HDD reset, a restart from its menu) comes back to it.
 
 ## Failed boots
 
@@ -100,11 +100,11 @@ An update never overwrites the running image:
 2. The ESP32 arms the new slot with `TRIAL_PENDING` set. The trial starts at the next reset, or at once if the console is off or in reset; the console can also be reset straight after the upload.
 3. The new image confirms once it is up. System: `ConfirmBoot` ([Programmer protocol](programmer-protocol.md#commands)) after its UI has started. Loader: `0xA5` to port +3 before it resets into its target, which sets `TRIAL_CONFIRMED`.
 4. Once it's confirmed, the ESP32 makes it current: for the Loader, `DEFAULT_BANK` = the new slot; for System, the catalogue and `SYSTEM_BANK`. The old slot becomes the spare.
-5. If it isn't confirmed within 10s of `LRESET#` rising, or it resets before it confirms, the entry is marked failed-boot and the ESP32 sets `LAST_FAILED`. On a timeout the ESP32 also resets the console; the next boot lands on the old image.
+5. If it isn't confirmed within 10s of `LRESET#` rising, or it resets or is turned off before it confirms, the entry is marked failed-boot and the ESP32 sets `LAST_FAILED`. On a timeout the ESP32 also resets the console; the next boot lands on the old image.
 
-Only one trial runs at a time; another trial upload, or deleting the entry on trial, is refused with `ProgrammerBusy`. An arm for anything else cancels a trial that hasn't started. The trial state is kept in the catalogue, so an ESP32 restart picks it up again if the FPGA still shows it.
+Only one trial runs at a time. A new trial upload replaces one that isn't running (armed, or left swapped in with the console off after an ESP32 restart); while the console is running one, another trial upload or deleting the entry on trial is refused with `ProgrammerBusy`. An arm for anything else cancels a trial that hasn't started. The trial state is kept in the catalogue, so an ESP32 restart picks it up again if the FPGA still shows it.
 
-`DEFAULT_BANK` only ever points at a confirmed Loader, and the Loader only sends eject to a confirmed System, so neither can be replaced by an untested image.
+`DEFAULT_BANK` only ever points at a confirmed Loader (or, with none, the current System), and the Loader only sends eject to a confirmed System, so neither can be replaced by an untested image.
 
 ## Forced boots
 

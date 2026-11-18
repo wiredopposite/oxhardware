@@ -72,13 +72,13 @@ An entry is: role (1, the protocol's `Role`), bank (1, the `ACTIVE_BANK` format,
 
 **Retail tables:** the data tables OpenOX's System BIOS is built from, taken from the user's own retail BIOS by the host and kept for the console. A 32KB area after the catalogue: a header sector, then up to 28KB of tables. The header is written last: magic `'X','T','B','L'`, size, CRC-32, source CRC-32 (of the BIOS they came from) and a check word. There's one copy, and an upload erases the header first, so one cut off leaves no tables until it's repeated.
 
-**Allocation:** an upload takes a free run of slots aligned to its size (256KB, 512KB or 1MB). Slots in the catalogue, the active, default and armed banks are never used. Of the free runs it picks the one whose 512KB and 1MB blocks are most used, so small images pack together and 1MB runs stay open.
+**Allocation:** a Loader or System upload first drops the role's spare entries, keeping the current one, one on trial and one the running console is served from, and a committed Diag upload replaces the old Diag. So each role holds its current image and at most one spare. An upload takes a free run of slots aligned to its size (256KB, 512KB or 1MB). Slots in the catalogue, the active, default and armed banks are never used. Of the free runs it picks the one whose 512KB and 1MB blocks are most used, so small images pack together and 1MB runs stay open.
 
 **Mirrors:** an image that repeats its first 256KB or 512KB is stored as that, and its other slots stay free. The console reads the same bytes, since the bank mirrors through the 1MB window. The entry's size and CRC are those of the stored image.
 
 **Compaction:** when no aligned run is free but moving entries would make one, an upload fails with `Fragmented` instead of `NoSpace`. `Compact` then empties the aligned run that needs the fewest slots moved, one entry per request, largest first. Entries in the active, default and armed banks are never moved. Each move copies the entry, checks its CRC, then saves the catalogue, so a power loss before the save leaves the old entry in use.
 
-**Boots:** after every catalogue change the ESP32 sets the FPGA's user, System and Diag banks from it, and the default bank when there's a current Loader. A watcher task judges every armed boot and follows trial updates, as [Boot flow](boot-flow.md#failed-boots) describes. The `LRESET#` and boot control interrupts wake it, and it polls every 50ms while a boot is being timed.
+**Boots:** after every catalogue change the ESP32 sets the FPGA's user, System and Diag banks from it, and the default bank: the current Loader, or the current System when there's no Loader. A watcher task judges every armed boot and follows trial updates, as [Boot flow](boot-flow.md#failed-boots) describes. The `LRESET#` and boot control interrupts wake it, and it polls every 50ms while a boot is being timed.
 
 ## FPGA access
 
@@ -134,7 +134,7 @@ Turning the console on isn't possible over SMBus. That's the front-panel button,
 ## Console power
 
 - **State** comes from the FPGA: no LCLK is off, LCLK with `LRESET#` low is reset, both is running. The FPGA raises an interrupt when LCLK starts or stops and on resets, and a task reads the state on each and once a second. Off is only visible with the device on standby power.
-- **Buttons:** the power and eject switch lines, on open-drain GPIOs, pressed for 200ms. Power boots the user's ROM, eject boots System.
+- **Buttons:** the power and eject switch lines, on open-drain GPIOs, pressed for 200ms. Power boots the user's ROM, eject boots System. The release runs from a timer made at startup, so a press allocates nothing and works however low the heap is. So does `sys reboot`.
 - **Wake:** when a Bluetooth controller connects and the console is off, the power button is pressed, at most once every 15 seconds.
 - **Off:** once the console has been off for 5 seconds after running, the Bluetooth controllers are disconnected. Their pairing stays, and the Home button reconnects one, which wakes the console.
 
@@ -148,7 +148,7 @@ Turning the console on isn't possible over SMBus. That's the front-panel button,
 
 | Commands | Group |
 |---|---|
-| `0x00xx` | `sys`: ping, version, status, reboot |
+| `0x00xx` | `sys`: ping, version, status, reboot, heap (free heap, its history every 5 minutes, failed allocations, tasks), trace (allocations that stay held, with their callers) |
 | `0x01xx` | `log`: level per tag |
 | `0x02xx` | `fpga`: hold, release, the flash with the FPGA held |
 | `0x03xx` | `link`: register reads and writes, probe, clock, interrupt counts |

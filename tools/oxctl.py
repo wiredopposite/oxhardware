@@ -573,7 +573,8 @@ def kd_session(link, com, a):
         if row[1] == ROLES.index("user") and rom_name(row[9]) == a.name:
             prog(link, MODE_ROM, ROM_DELETE, bytes([row[0]]))
     print(f"==> Uploading {a.file} ({len(data)} bytes)", flush=True)
-    entry = ROM_ENTRY.unpack_from(rom_upload(link, data, "user", a.name, 0x02 | 0x04, True))[0]
+    # Booted once, not the power-button ROM: the boot watch keeps it across its resets
+    entry = ROM_ENTRY.unpack_from(rom_upload(link, data, "user", a.name, 0x04, True))[0]
 
     print("==> Turning the Xbox on", flush=True)
     link.request(CONSOLE_PRESS, bytes([0]))

@@ -1,155 +1,215 @@
 # oxctl
 
-`tools/oxctl.py` talks to the ESP32 over its USB serial port (UART0, 921600 8N1), using the [PC protocol](../dev/esp32.md#pc-protocol). It's the only way into the device from a PC: ROMs, the console's power and SMC, updates, the controller, Bluetooth and the kernel debugger.
+`tools/oxctl.py` is the PC tool for the device. It manages the ROM library, presses the console's buttons, talks to its SMC, updates the device and runs the kernel debugger.
 
-It needs Python 3 and `pyserial`.
+It needs Python 3 and `pyserial` (`pip install pyserial`).
+
+## Ports
+
+The device shows up on the PC as two USB serial ports:
+
+| Port | What it's for | Option |
+|---|---|---|
+| The ESP32's | Every command except the kernel debugger's | `-p COMx`, or set `OXCTL_PORT` |
+| The console's COM1 | Only the `kd` commands | `--com COMy`, or set `OXKD_COM` |
+
+Setting both variables saves typing them each time. The examples below leave `-p` out. In PowerShell:
 
 ```
-python tools/oxctl.py -p COMx <group> <command> [args]
+$env:OXCTL_PORT = "COMx"
+python tools/oxctl.py rom list
 ```
+
+## Common tasks
+
+Add a ROM and make it the one the power button boots:
+
+```
+python tools/oxctl.py xbox off
+python tools/oxctl.py rom upload mybios.bin --user
+python tools/oxctl.py xbox power
+```
+
+Boot a ROM once, without changing the power-button ROM:
+
+```
+python tools/oxctl.py xbox off
+python tools/oxctl.py rom upload test.bin --boot
+python tools/oxctl.py xbox power
+```
+
+The boot after that goes back to the Loader as usual. To boot a ROM that's already in the library once, use `rom boot ID`.
+
+Check the device is answering:
+
+```
+python tools/oxctl.py sys status
+```
+
+**Turn the console off before uploading a ROM.** The console reads its BIOS from the same flash, and an upload made while it's on fails its CRC check. Uploads from OpenOX's boot menu are the exception, since the console runs from RAM there.
+
+## Options
+
+These go before the command group, e.g. `oxctl.py -v rom list`.
 
 | Option | |
 |---|---|
-| `-p`, `--port` | The ESP32's serial port. Defaults to the `OXCTL_PORT` environment variable. |
+| `-p`, `--port` | The ESP32's port. Defaults to `OXCTL_PORT`. |
 | `-b`, `--baud` | 921600 by default. |
-| `-v`, `--verbose` | Also prints the ESP32's logs and events while the command runs. |
+| `-v`, `--verbose` | Also prints the ESP32's log and events while the command runs. |
 
-Numbers (addresses, lengths, IDs, registers) take decimal or `0x` hex.
+Addresses, lengths, IDs and SMBus values take decimal or `0x` hex.
 
 ## ROMs
 
-The ROM library is in the flash behind the FPGA, see [ROMs](roms.md). Entries have an ID, a role (`user`, `loader`, `system`, `diag`), a slot, a size and a name.
+See [ROMs](roms.md) for the library itself: the roles, slots and what boots when. `rom list` shows each entry's ID, which the other commands take.
 
-| Command | |
+| Command | What it does |
 |---|---|
-| `rom list` | Every entry. The last column shows its flags: `current` (the Loader, System or Diag in use), `trial`, `failed-boot` and `user` (the power-button ROM). |
-| `rom upload FILE [options]` | Uploads a ROM and adds it to the library. See below. |
-| `rom download ID OUT` | Saves an entry to a file. `rom download active OUT` saves the ROM the console is being served. |
+| `rom list` | Lists every entry: ID, role, slot, size, CRC, name and flags. The flags are `current` (the Loader, System or Diag in use), `user` (the power-button ROM), `trial` and `failed-boot`. |
+| `rom upload FILE` | Adds a ROM to the library. Options below. |
+| `rom download ID OUT` | Saves an entry to the file `OUT`. `rom download active OUT` saves the ROM the console is running now. |
 | `rom delete ID` | Deletes an entry. |
-| `rom rename ID NAME` | Up to 32 characters. |
-| `rom user ID` | Makes entry `ID` the power-button ROM. `rom user none` clears it. |
-| `rom boot ID [--reset]` | Boots `ID` once, from the console's next reset. `--reset` resets the console now. |
-| `rom compact SIZE` | Moves entries to free a run of `SIZE` (`256K`, `512K` or `1M`). |
+| `rom rename ID NAME` | Renames an entry, up to 32 characters. |
+| `rom user ID` | Makes the entry the power-button ROM. `rom user none` clears it, and the power button then boots System. |
+| `rom boot ID` | Boots the entry once, from the console's next power-on or reset. With `--reset`, it resets the console now to boot it straight away. |
+| `rom compact SIZE` | Moves entries until there's a free run of `SIZE` (`256K`, `512K` or `1M`). |
 
 `rom upload` options:
 
 | Option | |
 |---|---|
 | `--name NAME` | The entry's name. Defaults to the file name without its extension. |
-| `--type user\|loader\|system\|diag` | Its role, `user` by default. |
-| `--user` | Make it the power-button ROM. |
-| `--boot` | Boot it once, from the console's next reset. |
-| `--reset` | Reset the console once it's uploaded. With `--boot`, that boots it straight away. |
-| `--trial` | A Loader or System: it boots once on trial and only becomes current once it confirms ([Boot flow](../dev/boot-flow.md#trial-updates)). |
-| `--compact` | If there's room in total but no free run of the right size, move entries to make one. Without it, such an upload fails with `Fragmented`. |
-
-Turn the console off before uploading (`xbox off`). The flash is shared with the console while it runs, and an upload with the console on fails its CRC check.
-
-Examples:
-
-```
-python tools/oxctl.py -p COMx xbox off
-python tools/oxctl.py -p COMx rom upload devkit.bin --name devkit --user
-python tools/oxctl.py -p COMx xbox power
-```
-
-```
-python tools/oxctl.py -p COMx rom upload test.bin --name test --boot --reset
-```
-
-The second boots `test` once and leaves the power-button ROM alone. The console must be off for the upload, so `--reset` there only matters if it was turned on in between. Usually you press power afterwards.
+| `--type user\|loader\|system\|diag` | Its role. `user` by default. |
+| `--user` | Also make it the power-button ROM. |
+| `--boot` | Also boot it once, from the next power-on or reset. |
+| `--trial` | For a Loader or System update: it boots once on trial and only replaces the old one after it confirms. See [Boot flow](../dev/boot-flow.md#trial-updates). |
+| `--compact` | If there's room in total but no free run the right size, moves entries to make one. Without it, the upload stops and says so. |
+| `--reset` | Resets the console through the SMC once the upload is done. |
 
 ## The console
 
-| Command | |
+| Command | What it does |
 |---|---|
-| `xbox state` | `off`, `reset` or `running`, from the FPGA. |
+| `xbox state` | `off`, `reset` or `running`. |
 | `xbox power` | Presses the power button. |
-| `xbox eject` | Presses the eject button. |
-| `xbox status` | Tray state, AV pack and temperatures, read from the SMC. |
-| `xbox reset` | Resets the console through the SMC. |
+| `xbox eject` | Presses the eject button. Pressing it to turn the console on boots System. |
+| `xbox reset` | Resets the console through the SMC. This works even when it's hung. |
 | `xbox cycle` | Power-cycles it through the SMC. |
 | `xbox off` | Turns it off through the SMC. |
-| `smbus read ADDR REG [--word]` | Reads the console's SMBus, e.g. `smbus read 0x10 0x03`. |
-| `smbus write ADDR REG VALUE [--word]` | |
-
-`xbox reset` works on a console that's hung with interrupts off.
+| `xbox status` | The tray state, AV pack and the CPU and board temperatures, read from the SMC. |
+| `smbus read ADDR REG [--word]` | Reads a byte, or a word with `--word`, from the console's SMBus. E.g. `smbus read 0x10 0x03` reads the SMC's tray state. |
+| `smbus write ADDR REG VALUE [--word]` | Writes a byte or a word. |
 
 ## Kernel debugger
 
-The console's COM1 is the FPGA's COM UART, at a fixed 115200 whatever the guest programs, on its own USB serial port. These commands take that port with `--com`, which defaults to the `OXKD_COM` environment variable. Only `kd debug` needs `-p`.
+These commands drive a KD build of OpenOX's BIOS through the console's COM1. Every `kd` command needs the COM port (`--com`). `kd debug` also needs the ESP32's port, since it uploads the BIOS and turns the console on.
 
-| Command | |
+| Command | What it does |
 |---|---|
-| `kd debug BIOS --com COMy` | The whole loop. Turns the console off if it's on, uploads `BIOS` (a KD build) as the power-button ROM named `kd`, replacing the last `kd`, and arms it for the next boot. Then it turns the console on, waits for the kernel's boot break and bridges COM1 to TCP for lldb. If the kernel doesn't answer, it arms the ROM again and resets the console once more. |
-| `kd bridge --com COMy` | Only the bridge, for a console that's already running a KD build. |
-| `kd probe --com COMy` | Asks the kernel why it stopped and prints the answer. |
-| `kd kill --com COMy` | Resets a console that's stopped in the debugger. |
+| `kd debug BIOS` | The whole loop, in one command. 1. Turns the console off if it's on. 2. Deletes the user ROMs named `kd` and uploads `BIOS` in their place, to boot once. The power-button ROM stays as it was. 3. Presses power and waits for the kernel's boot break. If it doesn't come, boots the ROM again with a reset. 4. Bridges COM1 to TCP for lldb until Ctrl+C. |
+| `kd bridge` | Only step 4, for a console that's already running a KD build. |
+| `kd probe` | Asks the kernel why it's stopped, and prints the answer. |
+| `kd kill` | For a console stopped in the debugger: the kernel resets it through the SMC. |
+
+Then in lldb: `gdb-remote 2345`.
 
 | Option | |
 |---|---|
-| `--com-baud` | 115200, the FPGA's UART speed. |
-| `--tcp` | The TCP port for lldb, 2345 by default: `gdb-remote 2345`. |
-| `--name` | The ROM name `kd debug` uses and replaces, `kd` by default. Give ROMs you want to keep a different name. |
-| `--wait` | Seconds to wait for the kernel to answer, 20 by default. |
-| `--traffic` | Prints the GDB remote protocol traffic. |
+| `--com COMy` | The COM1 port. Defaults to `OXKD_COM`. |
+| `--tcp PORT` | The TCP port for lldb, 2345 by default. |
+| `--name NAME` | The ROM name `kd debug` replaces, `kd` by default. Don't give a ROM you want to keep this name. |
+| `--wait SECONDS` | How long `kd debug` and `kd probe` wait for the kernel, 20 by default. |
+| `--traffic` | Prints the debugger traffic. |
+| `--com-baud` | 115200 by default. The device's COM1 always runs at 115200, whatever the console programs. |
 
-The bridge takes one debugger at a time and drops what the kernel sends while none is connected. It keeps running until Ctrl+C. The OpenOX side of the loop, VS Code included, is in OpenOX's `docs/dev/debugging.md`.
+The bridge takes one debugger at a time and drops the kernel's output while none is connected. When the kernel resets the console itself, lldb stays connected and stops at the next boot break. OpenOX's side of this, VS Code included, is in OpenOX's `docs/dev/debugging.md`.
 
 ## Updates
 
-| Command | |
+These work with the console running.
+
+| Command | What it does |
 |---|---|
-| `update fpga FILE` | Writes a new bitstream and reloads the FPGA, which takes a few seconds. The console keeps running. |
+| `update fpga FILE` | Writes a new FPGA bitstream and reloads the FPGA, which takes a few seconds. |
 | `update esp32 FILE` | Writes new ESP32 firmware. The ESP32 restarts once it's written. |
-| `tables upload FILE [--source CRC]` | Uploads the retail tables the System BIOS is built from. `--source` is the CRC of the retail BIOS they came from. |
-| `tables download OUT` | |
+| `tables upload FILE [--source CRC]` | Uploads the retail tables the System BIOS is built from. `CRC` is the CRC32 of the retail BIOS they came from, recorded with them. |
+| `tables download OUT` | Saves the stored retail tables to a file. |
 
 ## Controller and Bluetooth
 
-| Command | |
+The device is the console's controller port 1: a USB gamepad behind a hub, fed by Bluetooth controllers through BlueRetro.
+
+| Command | What it does |
 |---|---|
-| `usb status` | The controller's USB state. |
-| `usb stop`, `usb start` | Detaches the controller until it's started again or the ESP32 reboots. |
-| `usb unplug`, `usb plug` | Unplugs the gamepad from hub port 1, and plugs it back in. |
-| `usb pad BUTTONS... [--lx N] [--ly N] [--rx N] [--ry N]` | Holds buttons and sets the sticks (-32768 to 32767), e.g. `usb pad a start --lx 20000`. Prints the last rumble. |
-| `bt status` | Pairing, connected controllers and the config page. |
-| `bt pair on\|off` | Pairing runs by itself at boot while no controller is known. |
-| `bt config on\|off` | Opens BlueRetro's BLE configuration page. It has no authentication, so it's closed at boot. |
+| `bt status` | Whether pairing is on, how many controllers are connected and whether the configuration page is open. |
+| `bt pair on\|off` | Starts or stops pairing. It also starts on its own at startup and whenever the last controller disconnects. |
+| `bt config on\|off` | Opens or closes BlueRetro's BLE configuration page. It has no password, so it's closed at startup. |
 | `bt forget` | Disconnects every controller and clears all pairing keys. |
+| `usb status` | The USB state of the gamepad and hub, and transfer counters. |
+| `usb stop`, `usb start` | Detaches the whole USB device from the console, and attaches it again. A stop lasts until `usb start` or the ESP32 restarts. |
+| `usb unplug`, `usb plug` | Unplugs the gamepad from the hub, and plugs it back in. |
+| `usb pad [BUTTONS...] [--lx N] [--ly N] [--rx N] [--ry N]` | Sets what the gamepad reports, until the next `usb pad`: the buttons named are held, and the sticks run from -32768 to 32767. E.g. `usb pad a start --lx 20000`. `usb pad` alone releases everything. It prints the last rumble the console sent. |
 
-## ESP32
+The `usb pad` buttons are `up` `down` `left` `right` `start` `back` `ls` `rs` `a` `b` `x` `y` `black` `white` `lt` `rt`.
 
-| Command | |
+## The ESP32
+
+| Command | What it does |
 |---|---|
-| `sys ping`, `sys version`, `sys status` | |
+| `sys ping` | Checks the link answers. |
+| `sys version` | The firmware and ESP-IDF versions, and when it was built. |
+| `sys status` | Uptime, free heap (now, the lowest it's been and the largest free block) and why it last restarted. |
 | `sys reboot` | Restarts the ESP32. |
-| `log level LEVEL [TAG]` | `none`, `error`, `warn`, `info`, `debug` or `verbose`, for every tag or one. |
-| `monitor [--reset]` | Prints logs and events until Ctrl+C. `--reset` restarts the ESP32 first, to see its boot log. |
+| `sys heap` | Free heap now, a sample every 5 minutes for the last 8 hours, any allocation that failed, and every task with its stack headroom. |
+| `sys trace start [N]` | Starts recording allocations that aren't freed, up to `N` (64 by default). |
+| `sys trace dump` | Lists the recorded allocations that are still held, with who made them. |
+| `sys trace stop` | Stops recording. |
+| `log level LEVEL [TAG]` | Sets the log level, for one tag or all of them: `none`, `error`, `warn`, `info`, `debug` or `verbose`. |
+| `monitor [--reset]` | Prints the log and events until Ctrl+C. `--reset` restarts the ESP32 first, to see it start up. |
+
+`sys trace dump` names the functions from the firmware's ELF, `esp32/build/openox.elf` by default (`--elf` for another), through ESP-IDF's `xtensa-esp32-elf-addr2line`. Without them it prints addresses.
 
 ## Bring-up and diagnostics
 
 These are for working on the device itself.
 
-| Command | |
+**FPGA and its flash.** `fpga id`, `read` and `write` hold the FPGA in reset while they run and release it at the end. Meanwhile the console has no BIOS. `iceprog` mustn't be running.
+
+| Command | What it does |
 |---|---|
-| `fpga status` | |
+| `fpga status` | Whether the FPGA is configured (CDONE), and whether the ESP32 is holding it in reset. |
 | `fpga id` | The FPGA flash's JEDEC ID. |
-| `fpga probe` | Checks the configuration bus wiring. |
-| `fpga write FILE [--addr A]` | Programs the FPGA's flash directly. |
-| `fpga read OUT --addr A --len N` | |
-| `fpga hold`, `fpga release` | Holds the FPGA in reset, or lets a held one boot. |
-| `link info` | The FPGA's identity over the SPI link. |
+| `fpga probe` | Checks the wiring to the FPGA's flash. |
+| `fpga read OUT --addr A --len N` | Reads the FPGA's flash to a file. |
+| `fpga write FILE [--addr A]` | Erases, writes and verifies the FPGA's flash at a 4KB-aligned address, 0 by default. |
+| `fpga hold`, `fpga release` | Holds the FPGA in reset until `fpga release`, which lets it configure. |
+
+**The SPI link to the FPGA.** `--mhz F` on any `link` command sets the link clock first. It's kept until the ESP32 restarts.
+
+| Command | What it does |
+|---|---|
+| `link info` | The FPGA design's version, board and features, and the LPC reset state. |
 | `link probe` | Checks the link wiring. |
-| `link test [--count N] [--mhz F]` | Stress-tests the scratch register. `--mhz` sets the link clock first, kept until the ESP32 reboots. |
-| `link read ADDR [--len N] [--space S]`, `link write ADDR HEXBYTES [--space S]` | FPGA registers, see [Link](../dev/link.md#registers). |
-| `link irq` | FPGA interrupts taken, by bit. |
-| `nor info` | The ROM flash, through the running FPGA. |
-| `nor read OUT --addr A --len N` | |
-| `nor write FILE --addr A` | Erases, programs and verifies. |
-| `nor erase --addr A --len N`, `nor crc --addr A --len N` | |
-| `prog info` | The [programmer protocol](../dev/programmer-protocol.md). |
+| `link test [--count N]` | Writes and reads back the scratch register `N` times, 200 by default. |
+| `link read ADDR [--len N] [--space S]` | Reads FPGA registers, see [Link](../dev/link.md#registers). `S` is 0 registers (default), 1 USB slots, 2 ROM flash reads, 3 FIFOs. |
+| `link write ADDR HEXBYTES [--space S]` | Writes them, e.g. `link write 0x0C 01020304`. |
+| `link irq` | How many FPGA interrupts the ESP32 has taken, by bit. |
+
+**The ROM flash**, through the running FPGA. `nor write` and `nor erase` bypass the library, so they can break it.
+
+| Command | What it does |
+|---|---|
+| `nor info` | Whether the flash answers, and its ID. |
+| `nor read OUT --addr A --len N` | Reads it to a file. |
+| `nor write FILE --addr A` | Erases, writes and verifies, at a 4KB-aligned address. |
+| `nor erase --addr A --len N` | Erases. |
+| `nor crc --addr A --len N` | The CRC32 of a range. |
+
+**The [programmer protocol](../dev/programmer-protocol.md)**, the one the console's boot menu uses.
+
+| Command | What it does |
+|---|---|
+| `prog info` | The protocol and firmware versions, the console's state, the library's current entries and its free slots. |
 | `prog smbus-read ADDR REG`, `prog smbus-write ADDR REG VALUE` | SMBus through the programmer. |
 | `prog confirm` | Confirms the trial boot that's running now. |
-
-`fpga id`, `read`, `write` and `hold` keep the FPGA in reset (CRESET low) while they run. The console loses its BIOS meanwhile, and `iceprog` mustn't be running. `nor write` and `nor erase` write the ROM library's flash directly, outside the catalogue.

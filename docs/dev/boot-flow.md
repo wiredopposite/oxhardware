@@ -1,6 +1,6 @@
 # Boot flow
 
-How the device decides what the Xbox boots: the ROM roles, the Loader's decision, one-shot armed boots, failed-boot detection, trial updates and forced boots. The registers are in [Link](link.md#lpc-and-banks).
+How the device decides what the Xbox boots: the ROM roles, the Loader's decision, one-shot armed boots, keeping a booted BIOS, failed-boot detection, trial updates and forced boots. The registers are in [Link](link.md#lpc-and-banks).
 
 ## ROM roles
 
@@ -30,7 +30,7 @@ The Loader, System and Diag run on the Xbox CPU and reach the SMC through the MC
 | `PENDING_BANK` + `ARM_AT_RESET` | Served for **one** boot: at the next `LRESET#` assertion it becomes `ACTIVE_BANK` and the arm clears. |
 | `ACTIVE_BANK` | What is being served now. |
 
-At every `LRESET#` assertion: if armed, `ACTIVE_BANK ← PENDING_BANK`, `ARMED_BOOT` is set and `TRIAL ← TRIAL_PENDING`; otherwise `ACTIVE_BANK ← DEFAULT_BANK` and both clear. The arm, `TRIAL_PENDING` and `CONFIRMED` clear either way. A bank that crashes, FRAGs or reboots therefore never runs twice by accident: the reset after it lands on the Loader.
+At every `LRESET#` assertion: if armed, `ACTIVE_BANK ← PENDING_BANK`, `ARMED_BOOT` is set and `TRIAL ← TRIAL_PENDING`; otherwise `ACTIVE_BANK ← DEFAULT_BANK` and both clear. The arm, `TRIAL_PENDING` and `CONFIRMED` clear either way. The FPGA on its own lands every reset after an armed boot on the Loader; the ESP32 re-arms a booted BIOS so it keeps the console (see [Keeping a booted BIOS](#keeping-a-booted-bios)).
 
 While `LRESET#` is held low (console off, or in reset) an arm takes effect at once, the same way. Power-on brings no falling edge, so this is what makes an arm made with the console off apply to its next boot.
 
@@ -67,24 +67,30 @@ The banks the Loader reads are set by the ESP32 from the catalogue. Until the ES
    | Power button | `USER_BANK`; System if none is set |
 
 3. The Loader writes the target to port +2 and resets the console through the SMC.
-4. The target boots (one-shot). Its next reset lands on the Loader again.
+4. The target boots, and keeps the console until it's turned off (see below).
 
 Eject therefore always reaches System, whatever is in the user banks.
 
+## Keeping a booted BIOS
+
+A BIOS on a flash chip reboots into itself, and some rely on it: one can reset or power cycle the console early on, for example for the first hard drive to find a second. So once an armed boot of anything other than the Loader is running, the ESP32 arms the same bank again after every reset that takes the arm. Held in reset, the arm applies at once, so a quick power cycle comes back to it too.
+
+The console goes back to the Loader once `LRESET#` has been held for 3s, meaning it's really off: the ESP32 drops the arm and sets `ACTIVE_BANK` to `DEFAULT_BANK`, since the next power-on has no reset edge to pick that up. An arm for a different bank (the Loader's, System's `Boot`, `oxctl rom boot`) also ends it, and that boot is kept in turn.
+
+A boot that was already running when the ESP32 started is picked up the same way.
+
 ## Failed boots
 
-User ROMs are stock code and can't report anything, so the ESP32 judges every armed boot from what the FPGA sees: `LRESET#` edges and `MEM_READ_COUNT` against time.
+User ROMs are stock code and can't report anything. A BIOS that doesn't start makes the SMC retry: bursts of 4 resets about 0.37s apart, then a FRAG (see [Measurements](measurements.md#boot-outcomes)). How many reads a BIOS makes, or when it resets the console itself, isn't judged.
 
-On a 1.6, a good boot serves about 267,000 reads within half a second and `LRESET#` stays high. A failed one stops after a few thousand reads, and the SMC retries with bursts of resets before it FRAGs (see [Measurements](measurements.md#boot-outcomes)).
-
-**Rule:** an armed boot has failed if `LRESET#` asserts again within 3s of deasserting, or fewer than 65,536 reads have been served 2s after it. On failure the ESP32:
+**Rule:** a kept boot has failed when the console resets 4 times within 2s. The ESP32 then:
 
 1. sets `LAST_FAILED` and records the bank in the catalogue (`FAILED_BOOT`);
-2. if the console is not already resetting by itself, resets it through the SMC (reset, then power cycle if the SMC doesn't respond).
+2. drops the arm and resets the console through the SMC (reset, then power cycle if the SMC doesn't respond).
 
-The one-shot arm has expired by then, so the console comes back to the Loader, which sends it to System (see [Normal boot](#normal-boot)). An arm the Loader has made again by the time `LAST_FAILED` is set is kept. A later good armed boot of the same entry clears its `FAILED_BOOT`.
+The console comes back to the Loader, which sends it to System (see [Normal boot](#normal-boot)). A boot of the same entry that runs for 5s clears its `FAILED_BOOT`.
 
-A trial boot is judged as [Trial updates](#trial-updates) describes instead. A boot that was already running when the ESP32 started is not judged, since its start time isn't known; nor is anything while the config bus holds the FPGA.
+A trial boot is judged as [Trial updates](#trial-updates) describes instead, and nothing is judged while the config bus holds the FPGA.
 
 ## Trial updates
 

@@ -240,7 +240,6 @@ uint32_t Slots(const CatEntry &e) { return e.Size / SlotSize; }
 constexpr uint16_t RegLpcCtrl = 0x0020;
 constexpr uint16_t RegPending = 0x0023;
 constexpr uint16_t RegDefault = 0x0027;
-constexpr uint16_t RegReadCount = 0x002C;  // memory reads served since LRESET# last fell
 constexpr uint16_t RegBootFlags = 0x003A;
 constexpr uint16_t RegUserBank = 0x003B;
 constexpr uint8_t CtrlArm = 0x08;
@@ -588,21 +587,50 @@ void TrialStep()
     }
 }
 
-// Every other armed boot is judged from LRESET# and the reads served. A good boot reads
-// its image within about half a second and keeps running; a bad one stops after a few
-// thousand reads and the SMC resets it again and again, then FRAGs.
-constexpr int64_t BootResetUs = 3 * 1000 * 1000;   // a reset sooner than this: failed
-constexpr int64_t BootReadsUs = 2 * 1000 * 1000;
-constexpr uint32_t BootReadsMin = 64 * 1024;
+// A booted BIOS keeps its bank across the resets and quick power cycles it does itself, as
+// it would from a flash chip: some reset the console early on to find a second hard drive.
+// The console goes back to the Loader once it has really been off. A boot has failed when
+// the SMC gives up on it: bursts of resets, then a FRAG.
+constexpr int64_t BootOffUs = 3 * 1000 * 1000;     // LRESET# held this long: really off
+constexpr int64_t BootFragWindowUs = 2 * 1000 * 1000;
+constexpr uint8_t BootFragResets = 4;              // the SMC retries in bursts of 4
+constexpr int64_t BootUpUs = 5 * 1000 * 1000;
+
+constexpr uint16_t RegActive = 0x0022;
 
 struct BootWatch {
-    bool Known;
-    uint8_t Seen;
     bool On;
-    bool ReadsOk;
+    bool Up;
     uint8_t Bank;
-    int64_t Start;
+    uint8_t Seen;           // LPC_RESET_COUNT
+    uint8_t Recent;         // resets since WindowStart
+    int64_t WindowStart;
+    int64_t Start;          // when it last came out of reset
+    int64_t LowSince;       // 0 while running
 } Bw;
+
+// Only the arm itself: a trial or LAST_FAILED is left as it is
+bool ReArm(uint8_t bank)
+{
+    uint8_t ctrl;
+    if (!FpgaLink::Write(Space::Regs, RegPending, &bank, 1) ||
+        !FpgaLink::Read(Space::Regs, RegLpcCtrl, &ctrl, 1)) {
+        return false;
+    }
+    ctrl |= CtrlArm;
+    return FpgaLink::Write(Space::Regs, RegLpcCtrl, &ctrl, 1);
+}
+
+// Unless something else has been armed since
+void DisarmIf(uint8_t bank)
+{
+    Banks b;
+    if (!ReadBanks(b) || !(b.Ctrl & CtrlArm) || b.Pending != bank) {
+        return;
+    }
+    const uint8_t ctrl = uint8_t(b.Ctrl & ~CtrlArm);
+    FpgaLink::Write(Space::Regs, RegLpcCtrl, &ctrl, 1);
+}
 
 void BootMark(bool failed)
 {
@@ -618,20 +646,27 @@ void BootMark(bool failed)
     }
 }
 
-// LAST_FAILED tells the Loader; an arm or trial it has made since is kept
-void BootFail(const char *why, bool reset)
+// LAST_FAILED tells the Loader, which the reset lands on
+void BootFail()
 {
     Bw.On = false;
-    ESP_LOGW(Tag, "armed boot of slot %u failed: %s", BankSlot(Bw.Bank), why);
+    ESP_LOGW(Tag, "boot of slot %u failed: the SMC keeps resetting it", BankSlot(Bw.Bank));
     uint8_t f;
     if (ReadFlags(f)) {
         const uint8_t w = uint8_t(FlagLastFailed | ((f & FlagTrialPending) ? FlagTrial : 0));
         FpgaLink::Write(Space::Regs, RegBootFlags, &w, 1);
     }
     BootMark(true);
-    if (reset) {
-        ResetConsole();
-    }
+    DisarmIf(Bw.Bank);
+    ResetConsole();
+}
+
+// Served from the next power-on, which has no reset edge to pick it up
+void BackToLoader(const Banks &b)
+{
+    DisarmIf(Bw.Bank);
+    FpgaLink::Write(Space::Regs, RegActive, &b.Default, 1);
+    Bw.On = false;
 }
 
 void BootStep()
@@ -646,53 +681,63 @@ void BootStep()
     }
     Banks b;
     uint8_t f;
-    uint8_t rc[4];
-    if (!ReadBanks(b) || !ReadFlags(f) ||
-        !FpgaLink::Read(Space::Regs, RegReadCount, rc, sizeof(rc))) {
+    if (!ReadBanks(b) || !ReadFlags(f)) {
         return;
     }
-    if (!Bw.Known) {            // a boot already running when we started: not judged
-        Bw.Known = true;
-        Bw.Seen = b.Resets;
+    // A trial is judged on its own
+    if (Tr.Now != Phase::None || (f & FlagTrial)) {
+        Bw.On = false;
         return;
     }
     const int64_t now = esp_timer_get_time();
-    if (Bw.On) {
-        if (b.Resets != Bw.Seen) {
-            if (now - Bw.Start < BootResetUs) {
-                BootFail("reset again", false);
-                return;
-            }
-            Bw.On = false;
+    const bool running = b.Status & StatusLreset;
+    if (!Bw.On) {
+        // Also picks up a boot already running when the ESP32 started
+        if (!running || !(f & FlagArmedBoot) || b.Active == b.Default) {
+            return;
         }
-        else if (!Bw.ReadsOk && now - Bw.Start >= BootReadsUs) {
-            const uint32_t reads = rc[0] | rc[1] << 8 | rc[2] << 16 | uint32_t(rc[3]) << 24;
-            if (reads < BootReadsMin) {
-                char why[40];
-                snprintf(why, sizeof(why), "%lu reads", (unsigned long)reads);
-                BootFail(why, true);
-                return;
-            }
-            Bw.ReadsOk = true;
+        Bw = {true, false, b.Active, b.Resets, 0, now, now, 0};
+        ESP_LOGI(Tag, "slot %u booted, kept until the console is turned off", BankSlot(Bw.Bank));
+    }
+    if ((b.Status & StatusArmed) && b.Pending != Bw.Bank) {
+        ESP_LOGI(Tag, "slot %u armed: slot %u lets go", BankSlot(b.Pending), BankSlot(Bw.Bank));
+        Bw.On = false;
+        return;
+    }
+    if (b.Resets != Bw.Seen) {
+        if (now - Bw.WindowStart > BootFragWindowUs) {
+            Bw.WindowStart = now;
+            Bw.Recent = 0;
         }
-        else if (Bw.ReadsOk && now - Bw.Start >= BootResetUs) {
-            Bw.On = false;
-            BootMark(false);
-            ESP_LOGI(Tag, "armed boot of slot %u is up", BankSlot(Bw.Bank));
-        }
-        if (Bw.On) {
+        Bw.Recent = uint8_t(Bw.Recent + uint8_t(b.Resets - Bw.Seen));
+        Bw.Seen = b.Resets;
+        if (Bw.Recent >= BootFragResets) {
+            BootFail();
             return;
         }
     }
-    if (b.Resets != Bw.Seen && (b.Status & StatusLreset)) {
-        Bw.Seen = b.Resets;
-        if ((f & FlagArmedBoot) && !(f & FlagTrial)) {
-            Bw.On = true;
-            Bw.ReadsOk = false;
-            Bw.Bank = b.Active;
+    if (running) {
+        if (Bw.LowSince != 0) {
+            Bw.LowSince = 0;
             Bw.Start = now;
-            ESP_LOGI(Tag, "armed boot of slot %u started", BankSlot(Bw.Bank));
         }
+        if (!Bw.Up && now - Bw.Start >= BootUpUs) {
+            Bw.Up = true;
+            BootMark(false);
+            ESP_LOGI(Tag, "slot %u is up", BankSlot(Bw.Bank));
+        }
+    }
+    else if (Bw.LowSince == 0) {
+        Bw.LowSince = now;
+    }
+    else if (now - Bw.LowSince >= BootOffUs) {
+        ESP_LOGI(Tag, "console off: slot %u lets go", BankSlot(Bw.Bank));
+        BackToLoader(b);
+        return;
+    }
+    // A reset takes the arm: it's put back for the next one. Held in reset, it applies at once
+    if (!(b.Status & StatusArmed)) {
+        ReArm(Bw.Bank);
     }
 }
 

@@ -245,6 +245,7 @@ constexpr uint16_t RegUserBank = 0x003B;
 constexpr uint8_t CtrlArm = 0x08;
 constexpr uint8_t StatusArmed = 0x08;
 constexpr uint8_t StatusLreset = 0x01;
+constexpr uint8_t StatusLclk = 0x02;
 
 // BOOT_FLAGS writes set TRIAL_PENDING from bit2 and LAST_FAILED from bit3; bit6 clears
 // TRIAL_CONFIRMED.
@@ -446,9 +447,13 @@ void Apply()
                              bank(FindFlag(Role::System, RomCurrent)),
                              bank(FindFlag(Role::Diag, RomCurrent))};
     FpgaLink::Write(Space::Regs, RegUserBank, regs, 3);
-    const int loader = FindFlag(Role::Loader, RomCurrent);
-    if (loader != NoEntry) {
-        FpgaLink::Write(Space::Regs, RegDefault, &Cat.Entry[loader].Bank, 1);
+    // Without a Loader, System: never the FPGA's own slot 0, which may hold no entry
+    int dflt = FindFlag(Role::Loader, RomCurrent);
+    if (dflt == NoEntry) {
+        dflt = FindFlag(Role::System, RomCurrent);
+    }
+    if (dflt != NoEntry) {
+        FpgaLink::Write(Space::Regs, RegDefault, &Cat.Entry[dflt].Bank, 1);
     }
 }
 
@@ -493,10 +498,12 @@ void TrialArm(int id)
     xTaskNotifyGive(Watcher);
 }
 
-// An armed trial that will never run: it stays an entry of its role, not current
+// A trial that will never run, or that the console hasn't been seen running (the ESP32
+// restarted with it swapped in and the console off): it stays an entry of its role, not
+// current
 void TrialCancel()
 {
-    if (Tr.Now != Phase::Armed) {
+    if (Tr.Now == Phase::None || (Tr.Now == Phase::Running && Tr.Start)) {
         return;
     }
     ESP_LOGI(Tag, "trial of entry %d cancelled", Tr.Entry);
@@ -505,8 +512,14 @@ void TrialCancel()
     Save();
 }
 
+// Confirmed in the boot that's running: the FPGA's TRIAL stays set until the next reset, and
+// that boot is watched like any other booted one
+uint8_t PassedBank = NoBank;
+void BootStep();
+
 void TrialPass()
 {
+    PassedBank = Tr.Bank;
     CatEntry &e = Cat.Entry[Tr.Entry];
     ClearFlag(e.Kind, RomCurrent);
     e.Flags = uint8_t((e.Flags & ~(RomTrial | RomFailedBoot)) | RomCurrent);
@@ -519,6 +532,8 @@ void TrialPass()
     WriteFlags(false);
     ESP_LOGI(Tag, "entry %d confirmed: now the current %s", Tr.Entry,
              e.Kind == Role::Loader ? "Loader" : "System");
+    // Its own resets may come before the next poll
+    BootStep();
 }
 
 // The failure is recorded, LAST_FAILED tells the Loader, and the console is reset unless it
@@ -581,6 +596,10 @@ void TrialStep()
     }
     else if (b.Resets != Tr.Resets) {
         TrialFail("reset before confirming", false);
+    }
+    else if (!(b.Status & StatusLclk)) {
+        // Off, it counts no reset
+        TrialFail("turned off before confirming", false);
     }
     else if (esp_timer_get_time() - Tr.Start > TrialConfirmUs) {
         TrialFail("not confirmed in time", true);
@@ -684,8 +703,11 @@ void BootStep()
     if (!ReadBanks(b) || !ReadFlags(f)) {
         return;
     }
+    if (!(f & FlagTrial)) {
+        PassedBank = NoBank;
+    }
     // A trial is judged on its own
-    if (Tr.Now != Phase::None || (f & FlagTrial)) {
+    if (Tr.Now != Phase::None || ((f & FlagTrial) && b.Active != PassedBank)) {
         Bw.On = false;
         return;
     }
@@ -827,6 +849,31 @@ void ClearFlag(Role kind, uint8_t flag)
 
 bool EntryOk(uint8_t id) { return id < EntriesMax && Valid(Cat.Entry[id]); }
 
+// A role keeps its current image and one spare, which an upload goes into: the spares are
+// dropped first. Not the one on trial, nor one the running console is served from.
+void DropSpares(Role kind)
+{
+    if (Tr.Now != Phase::None && Cat.Entry[Tr.Entry].Kind == kind) {
+        TrialCancel();
+    }
+    Banks b;
+    const bool on = ReadBanks(b) && (b.Status & StatusLclk);
+    bool changed = false;
+    for (int i = 0; i < EntriesMax; i++) {
+        CatEntry &e = Cat.Entry[i];
+        if (!Valid(e) || e.Kind != kind || (e.Flags & RomCurrent) ||
+            (Tr.Now != Phase::None && Tr.Entry == i) || (on && b.Active == e.Bank)) {
+            continue;
+        }
+        ESP_LOGI(Tag, "entry %d dropped: the upload replaces it", i);
+        e.Bank = NoBank;
+        changed = true;
+    }
+    if (changed) {
+        Save();
+    }
+}
+
 constexpr int64_t IdleExpireUs = 30 * 1000 * 1000;
 constexpr uint32_t Block = 64 * 1024;
 
@@ -908,6 +955,9 @@ Status UploadBegin(const uint8_t *in, size_t len)
     const Status st = Ensure();
     if (st != Status::Ok) {
         return st;
+    }
+    if (kind != Role::User) {
+        DropSpares(kind);
     }
     if (FreeEntry() == NoEntry) {
         return Status::NoSpace;
@@ -1020,8 +1070,11 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
     if (trial && Up.Kind != Role::Loader && Up.Kind != Role::System) {
         return Status::BadCommand;
     }
-    if (trial && Tr.Now != Phase::None) {
-        return Status::ProgrammerBusy;
+    if (trial) {
+        TrialCancel();          // the new trial replaces one that isn't running
+        if (Tr.Now != Phase::None) {
+            return Status::ProgrammerBusy;
+        }
     }
     if ((c.Flags & CommitUser) && Up.Kind != Role::User) {
         return Status::BadCommand;
@@ -1051,7 +1104,14 @@ Status UploadCommit(const uint8_t *in, size_t len, uint8_t *out, size_t &out_len
         return Status::NoSpace;
     }
     const bool current = Up.Kind != Role::User && !trial;
-    if (current) {
+    if (current && Up.Kind == Role::Diag) {
+        // One slot: the new one takes over from the old
+        const int old = FindFlag(Role::Diag, RomCurrent);
+        if (old != NoEntry) {
+            Cat.Entry[old].Bank = NoBank;
+        }
+    }
+    else if (current) {
         ClearFlag(Up.Kind, RomCurrent);
     }
     if (c.Flags & CommitUser) {

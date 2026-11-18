@@ -62,7 +62,7 @@ The banks the Loader reads are set by the ESP32 from the catalogue. Until the ES
 
    | Condition | Target |
    |---|---|
-   | `LAST_FAILED` set | System; it shows which bank failed and clears the flag |
+   | `LAST_FAILED` set | System, for this boot only: the Loader clears the flag. The catalogue keeps which entry failed |
    | Eject | System |
    | Power button | `USER_BANK`; System if none is set |
 

@@ -1,0 +1,44 @@
+{
+    "version": "2.0.0",
+    "options": {
+        "cwd": "${workspaceFolder}"
+    },
+    "windows": {
+        "options": {
+            "shell": {
+                "executable": "powershell.exe",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+            }
+        }
+    },
+    "tasks": [
+        {
+            "label": "Build",
+            "type": "shell",
+            "windows": {
+                "command": ". ..\\thirdparty\\esp-idf\\export.ps1 *> $null; idf.py build"
+            },
+            "command": ". ../thirdparty/esp-idf/export.sh > /dev/null && idf.py build",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Flash",
+            "type": "shell",
+            "windows": {
+                "command": ". ..\\thirdparty\\esp-idf\\export.ps1 *> $null; idf.py -p ${input:port} flash"
+            },
+            "command": ". ../thirdparty/esp-idf/export.sh > /dev/null && idf.py -p ${input:port} flash",
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        }
+    ],
+    "inputs": [
+        {
+            "id": "port",
+            "type": "promptString",
+            "description": "The ESP32's serial port",
+            "default": "COM23"
+        }
+    ]
+}

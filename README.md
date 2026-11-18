@@ -30,3 +30,7 @@ It's developed on a UPduino v3.1 and an ESP32-PICO-DevKitM-2. There's no custom 
 ## Documentation
 
 See [docs/README.md](docs/README.md).
+
+## License
+
+Apache-2.0, see [LICENSE](LICENSE). Submodules keep their own licenses.

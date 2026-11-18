@@ -32,6 +32,9 @@ constexpr TickType_t ShutdownTicks = pdMS_TO_TICKS(5000);
 
 volatile State Current = State::Unknown;
 volatile bool Pressing;
+// Made once: a press allocates nothing, so it works however short the heap is
+esp_timer_handle_t ReleaseTimer;
+volatile gpio_num_t PressedPin;
 int64_t LastWakeUs = -WakeHoldoffUs;
 TaskHandle_t Watcher;
 Handler ShutdownHandler;
@@ -80,12 +83,10 @@ void Watch(void *)
     }
 }
 
-void Release(void *arg)
+void Release(void *)
 {
-    vTaskDelay(pdMS_TO_TICKS(PressMs));
-    gpio_set_level(static_cast<gpio_num_t>(reinterpret_cast<intptr_t>(arg)), 1);
+    gpio_set_level(PressedPin, 1);
     Pressing = false;
-    vTaskDelete(nullptr);
 }
 
 void ButtonInit(gpio_num_t pin)
@@ -112,6 +113,14 @@ void Start()
 {
     ButtonInit(Pins::PowerBtn);
     ButtonInit(Pins::EjectBtn);
+    const esp_timer_create_args_t release = {
+        .callback = Release,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "btn_release",
+        .skip_unhandled_events = false,
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&release, &ReleaseTimer));
     Current = Read();
     xTaskCreate(Watch, "console", 3072, nullptr, 6, &Watcher);
 }
@@ -127,11 +136,10 @@ bool Press(Button b)
         return false;
     }
     Pressing = true;
-    const gpio_num_t pin = b == Button::Power ? Pins::PowerBtn : Pins::EjectBtn;
-    gpio_set_level(pin, 0);
-    if (xTaskCreate(Release, "btn", 2048, reinterpret_cast<void *>(intptr_t(pin)), 6, nullptr) !=
-        pdPASS) {
-        gpio_set_level(pin, 1);
+    PressedPin = b == Button::Power ? Pins::PowerBtn : Pins::EjectBtn;
+    gpio_set_level(PressedPin, 0);
+    if (esp_timer_start_once(ReleaseTimer, uint64_t(PressMs) * 1000) != ESP_OK) {
+        gpio_set_level(PressedPin, 1);
         Pressing = false;
         return false;
     }

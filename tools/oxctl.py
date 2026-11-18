@@ -11,6 +11,8 @@ import oxkd
 from oxlink import Link, LinkError, Reader, wait_forever
 
 SYS_PING, SYS_VERSION, SYS_STATUS, SYS_REBOOT = 0x0000, 0x0001, 0x0002, 0x0003
+SYS_HEAP, SYS_TRACE = 0x0004, 0x0005
+TASK_STATES = ["running", "ready", "blocked", "suspended", "deleted"]
 LOG_LEVEL = 0x0100
 FPGA_INFO, FPGA_HOLD, FPGA_RELEASE = 0x0200, 0x0201, 0x0202
 FLASH_ID, FLASH_READ, FLASH_ERASE, FLASH_WRITE, FLASH_CRC = 0x0203, 0x0204, 0x0205, 0x0206, 0x0207
@@ -44,13 +46,75 @@ def cmd_sys(link, a):
         ver, idf, built, rev = r.str(), r.str(), r.str(), r.u16()
         print(f"firmware {ver}  (built {built})\nESP-IDF  {idf}\nchip rev {rev // 100}.{rev % 100}")
     elif a.what == "status":
-        r = Reader(link.request(SYS_STATUS))
+        data = link.request(SYS_STATUS)
+        r = Reader(data)
         up, free, low, reason = r.u64(), r.u32(), r.u32(), r.u8()
-        print(f"uptime {up / 1e6:.1f} s  heap free {free} (min {low})  "
+        largest = f", largest block {r.u32()}" if len(data) >= r.i + 4 else ""
+        print(f"uptime {up / 1e6:.1f} s  heap free {free} (min {low}{largest})  "
               f"last reset {RESET_REASONS[reason] if reason < len(RESET_REASONS) else reason}")
     elif a.what == "reboot":
         link.request(SYS_REBOOT)
         print("rebooting")
+    elif a.what == "heap":
+        r = Reader(link.request(SYS_HEAP))
+        free, low, largest, total = r.u32(), r.u32(), r.u32(), r.u32()
+        fails, fsize, fcaps, ffunc = r.u32(), r.u32(), r.u32(), r.str()
+        print(f"heap {free} free of {total}, lowest {low}, largest block {largest}")
+        if fails:
+            print(f"{fails} allocations failed, the last {fsize} bytes (caps 0x{fcaps:X}) in {ffunc}")
+        print("free heap every 5 minutes (minutes up: free / largest block):")
+        for _ in range(r.u8()):
+            mins, f16, l16 = r.u16(), r.u16(), r.u16()
+            print(f"  {mins:5d}: {f16 * 16:7d} / {l16 * 16:7d}")
+        total_tasks, n = r.u8(), r.u8()
+        print(f"{total_tasks} tasks (stack left is the least it has had):")
+        for _ in range(n):
+            name, state, prio, stack = r.str(), r.u8(), r.u8(), r.u32()
+            st = TASK_STATES[state] if state < len(TASK_STATES) else state
+            print(f"  {name:16s} {st:9s} prio {prio:2d}  stack left {stack}")
+    elif a.what == "trace":
+        op = a.args[0] if a.args else "dump"
+        if op == "start":
+            count = int(a.args[1]) if len(a.args) > 1 else 64
+            link.request(SYS_TRACE, struct.pack("<BH", 0, count))
+            print(f"tracing what stays allocated, {count} records")
+        elif op == "stop":
+            link.request(SYS_TRACE, bytes([1]))
+            print("trace stopped")
+        elif op == "dump":
+            r = Reader(link.request(SYS_TRACE, bytes([2])))
+            tracing, count = r.u8(), r.u16()
+            recs = []
+            for _ in range(count):
+                ccount, addr, size = r.u32(), r.u32(), r.u32()
+                callers = [r.u32() for _ in range(4)]
+                recs.append((size, addr, callers))
+            print(f"{count} allocations still held{' (still tracing)' if tracing else ''}, "
+                  f"{sum(s for s, _, _ in recs)} bytes")
+            names = symbolize({c for _, _, cs in recs for c in cs if c}, a.elf)
+            for size, addr, callers in recs:
+                where = " <- ".join(names.get(c, f"0x{c:08X}") for c in callers if c)
+                print(f"  {size:6d} at 0x{addr:08X}: {where}")
+        else:
+            sys.exit("sys trace: start [records], stop or dump")
+
+def symbolize(addrs, elf):
+    """Function names for code addresses, through the ESP-IDF toolchain's addr2line."""
+    import shutil
+    import subprocess
+    tool = shutil.which("xtensa-esp32-elf-addr2line")
+    if not tool:
+        for root, _, files in os.walk(os.path.expanduser("~/.espressif/tools/xtensa-esp-elf")):
+            if "xtensa-esp32-elf-addr2line.exe" in files or "xtensa-esp32-elf-addr2line" in files:
+                tool = os.path.join(root, next(f for f in files if f.startswith("xtensa-esp32-elf-addr2line")))
+                break
+    if not tool or not os.path.exists(elf) or not addrs:
+        return {}
+    addrs = sorted(addrs)
+    out = subprocess.run([tool, "-f", "-p", "-C", "-e", elf] + [f"0x{x:08X}" for x in addrs],
+                         capture_output=True, text=True).stdout.splitlines()
+    return {x: line.split(" at ")[0] + " (" + os.path.basename(line.split(" at ")[-1]) + ")"
+            for x, line in zip(addrs, out)}
 
 def release(link):
     r = Reader(link.request(FPGA_RELEASE, struct.pack("<I", 1000), timeout=3))
@@ -615,7 +679,13 @@ def main():
     p.add_argument("-v", "--verbose", action="store_true", help="also print logs and events")
     sub = p.add_subparsers(dest="group", required=True)
     s = sub.add_parser("sys")
-    s.add_argument("what", choices=["ping", "version", "status", "reboot"])
+    s.add_argument("what", choices=["ping", "version", "status", "reboot", "heap", "trace"],
+                   help="heap: the heap, its history and the tasks. trace start [records], "
+                        "trace stop, trace dump: what stays allocated, and where from")
+    s.add_argument("args", nargs="*")
+    s.add_argument("--elf", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                 "..", "esp32", "build", "openox.elf"),
+                   help="trace dump: the firmware's ELF, for function names")
     s = sub.add_parser("log")
     s.add_argument("op", choices=["level"])
     s.add_argument("level", choices=LEVELS)

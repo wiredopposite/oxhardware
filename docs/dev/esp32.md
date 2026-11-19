@@ -49,7 +49,9 @@ The bitstream and the firmware are uploaded through the programmer protocol like
 - **Bitstream:** staged in `golden`'s upload slot (a 4KB header written last, then the image), and checked for its CRC and the iCE40 sync word. It's then written to the FPGA's flash with the FPGA running, and the FPGA is reloaded, which takes about 70ms. USB unplugs and comes back. If the new design doesn't answer on the link, the last good bitstream is written back. Once it answers, it becomes the last good one.
 - **Firmware:** written to the OTA partition that isn't running, checked (ESP-IDF's image check and the upload CRC) and set as the boot partition. The ESP32 restarts after its reply. The new firmware is on trial: it confirms itself after 30 seconds, and if it resets before then the bootloader goes back to the previous one.
 
-A release sends the bitstream before the firmware, since the firmware restarts the ESP32.
+A release sends the bitstream before the firmware, since the firmware restarts the ESP32. A reloaded FPGA starts from its build parameters, without the banks or an armed trial, so with no firmware to send the console restarts the ESP32 itself, which sets the FPGA up again.
+
+Both report the OpenOX release they're built for, in `GetInfo`: `make VERSION=x.y.z` for the bitstream and `idf.py -DPROJECT_VER=x.y.z` for the firmware. Builds without one report 0.0.0. The console's Update OpenOX updates either one when it differs from the release.
 
 ## ROM library
 

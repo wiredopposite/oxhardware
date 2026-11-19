@@ -1,9 +1,20 @@
 `default_nettype none
 
+// The release version, from the Makefile's VERSION
+`ifndef OX_VERSION_MAJOR
+`define OX_VERSION_MAJOR 0
+`endif
+`ifndef OX_VERSION_MINOR
+`define OX_VERSION_MINOR 0
+`endif
+`ifndef OX_VERSION_PATCH
+`define OX_VERSION_PATCH 0
+`endif
+
 module link_regs #(
-    parameter [7:0]  VER_MAJOR = 8'd0,
-    parameter [7:0]  VER_MINOR = 8'd1,
-    parameter [7:0]  VER_PATCH = 8'd0,
+    parameter [7:0]  VER_MAJOR = `OX_VERSION_MAJOR,
+    parameter [7:0]  VER_MINOR = `OX_VERSION_MINOR,
+    parameter [7:0]  VER_PATCH = `OX_VERSION_PATCH,
     parameter [7:0]  BOARD_ID  = 8'd0,
     parameter [15:0] FEATURES  = 16'h0000
 ) (

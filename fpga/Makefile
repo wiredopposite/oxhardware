@@ -11,6 +11,12 @@
 
 BOARD  ?= upduino31
 DESIGN ?= hello
+# major.minor.patch, what the design reports as its version. 0.0.0 when not set.
+VERSION ?= 0.0.0
+VERSION_PARTS := $(subst ., ,$(VERSION))
+VERSION_DEFS := -D OX_VERSION_MAJOR=$(word 1,$(VERSION_PARTS)) \
+                -D OX_VERSION_MINOR=$(word 2,$(VERSION_PARTS)) \
+                -D OX_VERSION_PATCH=$(word 3,$(VERSION_PARTS))
 TOP    := top_$(DESIGN)
 BUILD  := build/$(BOARD)/$(DESIGN)
 PCF    := boards/$(BOARD)/$(BOARD).pcf
@@ -48,7 +54,7 @@ $(HEAD_HEX):
 
 $(BUILD)/$(TOP).json: $(RTL)
 	python -c "import os; os.makedirs('$(BUILD)', exist_ok=True)"
-	yosys -q -l $(BUILD)/yosys.log -p "synth_ice40 -top $(TOP) -json $@" $(RTL)
+	yosys -q $(VERSION_DEFS) -l $(BUILD)/yosys.log -p "synth_ice40 -top $(TOP) -json $@" $(RTL)
 
 $(BUILD)/$(TOP).asc: $(BUILD)/$(TOP).json $(PCF) $(CLKPY)
 	nextpnr-ice40 -q -l $(BUILD)/nextpnr.log --up5k --package sg48 --freq $(FREQ) $(PNR_EXTRA) --pcf $(PCF) --json $< --asc $@

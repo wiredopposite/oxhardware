@@ -26,7 +26,7 @@ Power the UPduino before the console and turn the console off first. Ground the 
 | 9 | 3.3V (not connected on 1.6) | 10 | LAD1 |
 | 11 | LAD0 | 12 | GND |
 | 13 | SMBus SCL | 14 | SMBus SDA |
-| 15 | 3.3V | 16 | SERIRQ (1.0) |
+| 15 | 3.3V | 16 | SERIRQ (not connected on 1.6, which has it on a test point under the board) |
 
 Find pin 1 on the board before wiring. Use pin 15 for 3.3V on every revision.
 
